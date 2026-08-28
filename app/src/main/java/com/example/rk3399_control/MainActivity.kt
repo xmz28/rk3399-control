@@ -236,7 +236,7 @@ private fun NetworkPage(
         }
         ChannelSelector(band, channel, busy) { channel = it }
         Button(onClick = { onApply(ssid, password, band, channel) }, enabled = !busy && ssid.isNotBlank() && password.length in 8..63 && channel in channelsForBand(band), modifier = Modifier.height(52.dp)) { Text("保存配置并重启热点") }
-        WarningCard("实机驱动支持 2.4 GHz 与 5 GHz AP。本 App 固定使用兼容性更好的 20 MHz；5 GHz 只开放非 DFS 信道，避免雷达检测造成热点启动等待或停播。切到 STA 后可在 Android 系统 Wi‑Fi 页面连接路由器。")
+        WarningCard("实机驱动支持 2.4 GHz 与 5 GHz AP。本 App 固定使用兼容性更好的 20 MHz。52/56/60/64 是仅供屏蔽箱测试的 DFS 实验信道，当前驱动没有雷达检测能力，请勿在开放环境使用。")
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("有线网口模式")
@@ -303,7 +303,7 @@ private fun ChannelSelector(band: String, channel: Int, busy: Boolean, onSelect:
 }
 
 private fun channelsForBand(band: String): List<Int> =
-    if (band == "5g") listOf(36, 40, 44, 48, 149, 153, 157, 161, 165) else (1..13).toList()
+    if (band == "5g") listOf(36, 40, 44, 48, 52, 56, 60, 64, 149, 153, 157, 161, 165) else (1..13).toList()
 
 private fun bandLabel(band: String): String = if (band == "5g") "5 GHz" else "2.4 GHz"
 

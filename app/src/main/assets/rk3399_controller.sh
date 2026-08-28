@@ -297,7 +297,7 @@ print_status() {
     CHANNEL_NOW=$(iw dev wlan0 info 2>/dev/null | grep 'channel ' | head -n 1 | sed 's/.*channel \([0-9][0-9]*\).*/\1/')
     [ -n "$CHANNEL_NOW" ] || CHANNEL_NOW=$(sed -n 's/^channel=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
     BAND_NOW=2g
-    case "$CHANNEL_NOW" in 36|40|44|48|149|153|157|161|165) BAND_NOW=5g;; esac
+    case "$CHANNEL_NOW" in 36|40|44|48|52|56|60|64|149|153|157|161|165) BAND_NOW=5g;; esac
     echo "SSID=$SSID_NOW"
     echo "BAND=$BAND_NOW"
     echo "CHANNEL=$CHANNEL_NOW"
@@ -330,7 +330,7 @@ ap_config() {
     [ ${#PASS} -ge 8 ] && [ ${#PASS} -le 63 ] || { echo '热点密码长度必须是 8..63'; return 3; }
     case "$BAND:$CH" in
         2g:[1-9]|2g:1[0-3]) HW_MODE=g ;;
-        5g:36|5g:40|5g:44|5g:48|5g:149|5g:153|5g:157|5g:161|5g:165) HW_MODE=a ;;
+        5g:36|5g:40|5g:44|5g:48|5g:52|5g:56|5g:60|5g:64|5g:149|5g:153|5g:157|5g:161|5g:165) HW_MODE=a ;;
         *) echo '频段或信道无效'; return 3 ;;
     esac
     SSID_ESC=$(printf '%s' "$SSID" | sed 's/[\\&|]/\\&/g')

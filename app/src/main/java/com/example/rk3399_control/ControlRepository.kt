@@ -121,7 +121,7 @@ class ControlRepository(private val context: Context) {
             callback(ShellResult(2, "热点密码长度必须是 8..63 位"))
             return
         }
-        val validChannels = if (band == "2g") (1..13).toSet() else setOf(36, 40, 44, 48, 149, 153, 157, 161, 165)
+        val validChannels = if (band == "2g") (1..13).toSet() else setOf(36, 40, 44, 48, 52, 56, 60, 64, 149, 153, 157, 161, 165)
         if (band !in setOf("2g", "5g") || channel !in validChannels) {
             callback(ShellResult(2, "频段或信道无效"))
             return
