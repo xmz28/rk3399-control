@@ -101,7 +101,7 @@ private fun ControlApp() {
                             onMode = { ap -> busy = true; repository.setWifiMode(ap) { result("已切换到 ${if (ap) "AP" else "STA"} 模式", it) } },
                             onApply = { ssid, pass, band, channel -> busy = true; repository.updateAp(ssid, pass, band, channel) { result("热点配置已保存", it) } },
                             onEthernet = { request -> busy = true; repository.setEthernet(request) { result("网口模式已应用", it) } },
-                            onUsbMode = { mode -> busy = true; repository.setUsbMode("type_a", mode) { result("USB3 Type-A 已切换为 $mode", it) } }
+                            onUsbPreset = { mode -> busy = true; repository.setUsbPreset(mode) { result("USB 启动预设 $mode 已保存，下次重启生效", it) } }
                         )
                         Page.LOGS -> LogsPage(repository)
                         Page.TERMINAL -> TerminalPage(repository)
@@ -202,7 +202,7 @@ private fun NetworkPage(
     onMode: (Boolean) -> Unit,
     onApply: (String, String, String, Int) -> Unit,
     onEthernet: (EthernetRequest) -> Unit,
-    onUsbMode: (String) -> Unit
+    onUsbPreset: (String) -> Unit
 ) {
     var ssid by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
@@ -217,11 +217,11 @@ private fun NetworkPage(
     var dns2 by rememberSaveable { mutableStateOf("1.1.1.1") }
     var pppoeUser by rememberSaveable { mutableStateOf("") }
     var pppoePassword by rememberSaveable { mutableStateOf("") }
-    var pendingUsbMode by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(s.ssid) { if (ssid.isBlank() && s.ssid != "—") ssid = s.ssid }
-    LaunchedEffect(s.wifiBand, s.channel) {
-        band = s.wifiBand.ifBlank { "2g" }
-        s.channel.toIntOrNull()?.let { channel = it }
+    var pendingUsbPreset by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(s.apSsid) { if (ssid.isBlank() && s.apSsid != "—") ssid = s.apSsid }
+    LaunchedEffect(s.apBand, s.apChannel) {
+        band = s.apBand.ifBlank { "2g" }
+        s.apChannel.toIntOrNull()?.let { channel = it }
     }
     LaunchedEffect(s.ethMode, s.ethAutoWait) { ethMode = s.ethMode.ifBlank { "auto" }; autoWait = s.ethAutoWait.toString() }
     PageContainer {
@@ -285,26 +285,22 @@ private fun NetworkPage(
         WarningCard("切换网口模式会重建 eth0 地址和默认路由，可能立即中断通过网线进行的 ADB、终端或页面连接。")
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
-        SectionTitle("USB 端口角色（本次运行有效）")
+        SectionTitle("USB 启动预设（下次重启生效）")
         Text("Type-C · fe800000 · 设备树 ${s.usbCDeviceTree} · 当前 ${s.usbCMode}")
         Text("USB3 Type-A · fe900000 · 设备树 ${s.usbADeviceTree} · 当前 ${s.usbAMode}")
         Text("ADB Gadget：${s.usbGadgetUdc} · ${s.usbGadgetState}；Type-A 已接外设 ${s.usbAAttached} 个", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        WarningCard("当前固件的 Type-C 在设备树中固定为 Host，不能安全地由 App 改成 Device。Type-A 原始配置为 OTG，可运行时切换；先拔掉电脑数据线或 USB 外设。切换可能断开 ADB，重启后恢复固件默认角色。")
-        val usbCableConnected = s.usbAMode != "host" && s.usbGadgetState !in setOf("—", "", "not attached")
-        val usbCanSwitch = !busy && s.usbASwitchable && !usbCableConnected && s.usbAAttached == 0
+        Text("当前：${s.usbPresetActive} · 下次启动：${s.usbPresetNext}", color = MaterialTheme.colorScheme.primary)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("host" to "Host", "peripheral" to "Device", "otg" to "OTG").forEach { (mode, label) ->
-                OutlinedButton(onClick = { pendingUsbMode = mode }, enabled = usbCanSwitch && s.usbAMode != mode) { Text("Type-A → $label") }
-            }
+            OutlinedButton(onClick = { pendingUsbPreset = "A" }, enabled = !busy && s.usbPresetNext != "A") { Text("A · C Host / A OTG") }
+            OutlinedButton(onClick = { pendingUsbPreset = "B" }, enabled = !busy && s.usbPresetNext != "B") { Text("B · C OTG / A Host") }
         }
-        if (usbCableConnected) Text("USB 数据线仍连接，请拔线后刷新再切换。", color = MaterialTheme.colorScheme.error)
-        if (s.usbAAttached > 0) Text("Type-A 上有外设，请安全卸载并拔下后刷新。", color = MaterialTheme.colorScheme.error)
+        WarningCard("选择预设只写入已校验的启动镜像，不会立即切换或自动重启。重启时 USB ADB 所在端口会改变；请确认能通过有线网络或 MaskRom 恢复。无须拔掉当前 USB 数据线。")
     }
-    pendingUsbMode?.let { mode ->
-        AlertDialog(onDismissRequest = { pendingUsbMode = null }, title = { Text("确认切换 USB3 Type-A？") },
-            text = { Text("将切换为 $mode。请确认数据线和外设已拔下；USB ADB 可能断开，重启才会恢复固件默认角色。") },
-            confirmButton = { Button(onClick = { pendingUsbMode = null; onUsbMode(mode) }) { Text("确认切换") } },
-            dismissButton = { TextButton(onClick = { pendingUsbMode = null }) { Text("取消") } })
+    pendingUsbPreset?.let { mode ->
+        AlertDialog(onDismissRequest = { pendingUsbPreset = null }, title = { Text("写入 USB 启动预设 $mode？") },
+            text = { Text("将校验并写入 resource 与 boot 启动分区。当前连接不会改变；下次重启后切换生效。失败时会尝试回滚，仍建议保留完整固件。") },
+            confirmButton = { Button(onClick = { pendingUsbPreset = null; onUsbPreset(mode) }) { Text("确认写入") } },
+            dismissButton = { TextButton(onClick = { pendingUsbPreset = null }) { Text("取消") } })
     }
 }
 

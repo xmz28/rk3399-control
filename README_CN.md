@@ -17,8 +17,7 @@
 - 在局域网开放 8765 端口供手机端远程查看状态、切换服务、修改端口和网络、读取日志。
 - 远程切换 STA 后扫描附近网络并连接 WPA/WPA2 热点；远程一次修改 Samba、HTTP、
   FTP 和 SFTP 的共用 `admin` 密码。
-- 查看两个 USB3 控制器角色；对设备树原始模式为 OTG 的 USB3 Type-A 提供临时
-  Host / Device / OTG 切换，本机与手机远程控制均可操作。
+- 查看两个 USB3 控制器角色；本机与手机可选 USB 启动预设 A/B，写入后下次重启生效。
 
 ## 使用前提
 
@@ -42,12 +41,18 @@ Copyparty 账号和 Primitive FTPd 的 FTP/SFTP 账号。NAS 密码限定为 4�
 Primitive FTPd 的偏好文件必须保持应用 UID 与 SELinux 标签。控制脚本仅在
 开机开关变化时原位修改其偏好；修改 FTP/SFTP 端口也原位写入，避免服务无法启动。
 
-本机 AIO-3399C-AI 的 Type-C 对应 `fe800000`，设备树为固定 `host`；当前内核
-不允许 App 运行时改变这个控制器。USB3 Type-A 对应 `fe900000`，设备树为 `otg`，
-可通过厂商 `dwc3_mode` 接口切换。切换前必须拔下电脑数据线或安全卸载并拔下
-Type-A 外设；脚本会检查 Gadget 连接状态和外设数量并拒绝带线切换。切换 USB
-可能断开 ADB，且不写入设备树，重启后回到固件默认角色。Type-C Device/ADB 迁移
-需要修改并刷入设备树、配置 Android Gadget，不能仅靠本 App 的按钮完成。
+本机 AIO-3399C-AI 无 SPR2801S NPU，已用自身启动分区备份制作并重启验证两套预设：
+
+| 预设 | Type-C `fe800000` | USB3 Type-A `fe900000` | ADB Gadget |
+| --- | --- | --- | --- |
+| A | Host | OTG | `fe900000.dwc3` |
+| B | OTG | Host | `fe800000.dwc3` |
+
+预设切换会校验并写入 **resource 与 boot 启动分区**，不会立即改变当前角色，
+也不自动重启。下次重启生效，因此选择时无须拔当前数据线。因没有真正的 A/B
+冗余启动分区，写入中断仍有风险，必须保留完整固件与 MaskRom 恢复方式。镜像
+和哈希只适用于此板当前固件，其他板或更新固件后会拒绝写入。准备过程见
+[`USB_PRESETS_CN.md`](USB_PRESETS_CN.md)。
 
 实机 Wi-Fi 驱动支持 2.4 GHz 信道 1–13，以及 5 GHz 信道
 36/40/44/48/52/56/60/64/149/153/157/161/165。热点固定使用 20 MHz；切换频段或信道时会
@@ -78,10 +83,10 @@ Debug APK：`app/build/outputs/apk/debug/app-debug.apk`
   FTP 开关和端口操作已实测；无密码无法执行控制。
 - FTP 偏好文件的应用 UID/SELinux 标签在开关与端口操作后保持不变，FTP/SFTP
   均可使用 `admin/admin` 登录。
-- USB：实机读取 `fe800000=host`、`fe900000=peripheral`，`fe900000` 原始
-  设备树模式为 `otg`；已验证同模式请求无副作用、Type-C 请求被拒绝、连接 ADB
-  时切换 Type-A Host 被拒绝。尚未拔线验证真正的角色切换与重新枚举。
-- Redmi K30 5G 手机上已显示远程 USB 状态与禁用态；带线时三个切换按钮不可用。
+- USB：模式 B 实机重启后读到 Type-C `otg/peripheral`、Type-A `host/host`，
+  `sys.usb.controller` 和 Gadget UDC 均为 `fe800000.dwc3`；随后选择预设 A 时
+  当前角色保持 B，重启后恢复 Type-C `host`、Type-A `otg/peripheral`，Gadget
+  回到 `fe900000.dwc3`。两套镜像写后分区哈希均与本机生成文件一致。
 - AP→STA 已通过有线控制接口切换，STA 扫描可返回附近 SSID、频率和信号强度；
   STA→AP 可恢复 `RK3399` 热点。后台已修复每 15 秒重复清理 STA 地址的问题。
 - NAS 共用密码临时改为测试密码后，HTTP、FTP、Samba 登录均成功；随后恢复

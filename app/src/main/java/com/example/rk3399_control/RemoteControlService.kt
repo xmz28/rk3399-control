@@ -117,6 +117,7 @@ class RemoteControlService : Service() {
                 .put("usbADeviceTree", snapshot.usbADeviceTree).put("usbAMode", snapshot.usbAMode)
                 .put("usbASwitchable", snapshot.usbASwitchable).put("usbAAttached", snapshot.usbAAttached)
                 .put("usbGadgetState", snapshot.usbGadgetState).put("usbGadgetUdc", snapshot.usbGadgetUdc)
+                .put("usbPresetActive", snapshot.usbPresetActive).put("usbPresetNext", snapshot.usbPresetNext)
                 .put("services", JSONArray().apply {
                     snapshot.services.forEach { service -> addService(service) }
                 })
@@ -178,6 +179,13 @@ class RemoteControlService : Service() {
                 val mode = body.getString("mode")
                 require(port == "type_a" && mode in setOf("host", "peripheral", "otg")) { "Unsupported USB port or mode" }
                 result(await { repository.setUsbMode(port, mode, it) })
+            }
+            "/api/v1/usb-preset" -> {
+                val mode = body.getString("mode")
+                require(mode in setOf("A", "B") && body.optString("confirm") == "APPLY_USB_PRESET") {
+                    "Invalid USB preset confirmation"
+                }
+                result(await { repository.setUsbPreset(mode, it) })
             }
             "/api/v1/password" -> {
                 val password = body.getString("password")

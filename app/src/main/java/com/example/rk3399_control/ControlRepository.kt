@@ -47,6 +47,8 @@ data class DeviceSnapshot(
     val usbAAttached: Int = 0,
     val usbGadgetState: String = "—",
     val usbGadgetUdc: String = "—",
+    val usbPresetActive: String = "custom",
+    val usbPresetNext: String = "custom",
     val services: List<ServiceInfo> = emptyList(),
     val error: String? = null
 )
@@ -257,6 +259,13 @@ class ControlRepository(private val context: Context) {
         runAsync("$REMOTE/controller.sh usb-set type_a $mode", 20, callback)
     }
 
+    fun setUsbPreset(mode: String, callback: (ShellResult) -> Unit) {
+        if (mode !in setOf("A", "B")) {
+            callback(ShellResult(2, "USB 启动预设只能是 A 或 B")); return
+        }
+        runAsync("$REMOTE/controller.sh usb-preset $mode", 50, callback)
+    }
+
     fun runTerminal(command: String, callback: (ShellResult) -> Unit) = runAsync(command, 60, callback)
 
     private fun runAsync(command: String, timeout: Long, callback: (ShellResult) -> Unit) {
@@ -349,6 +358,8 @@ class ControlRepository(private val context: Context) {
             usbAAttached = values["USB_A_ATTACHED"]?.toIntOrNull() ?: 0,
             usbGadgetState = values["USB_GADGET_STATE"] ?: "—",
             usbGadgetUdc = values["USB_GADGET_UDC"] ?: "—",
+            usbPresetActive = values["USB_PRESET_ACTIVE"] ?: "custom",
+            usbPresetNext = values["USB_PRESET_NEXT"] ?: "custom",
             services = services
         )
     }

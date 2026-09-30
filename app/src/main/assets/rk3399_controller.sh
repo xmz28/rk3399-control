@@ -353,19 +353,96 @@ usb_attached_devices() {
 }
 
 usb_status() {
-    echo "USB_C_DT=$(usb_dt_mode fe800000)"
+    USB_C_DT=$(usb_dt_mode fe800000)
+    echo "USB_C_DT=$USB_C_DT"
     echo "USB_C_MODE=$(cat /sys/devices/platform/usb@fe800000/dwc3_mode 2>/dev/null)"
     USB_A_DT=$(usb_dt_mode fe900000)
     echo "USB_A_DT=$USB_A_DT"
+    USB_PRESET_ACTIVE=custom
+    [ "$USB_C_DT:$USB_A_DT" = host:otg ] && USB_PRESET_ACTIVE=A
+    [ "$USB_C_DT:$USB_A_DT" = otg:host ] && USB_PRESET_ACTIVE=B
+    USB_PRESET_NEXT=$(cat "$BASE/config/usb_preset" 2>/dev/null)
+    case "$USB_PRESET_NEXT" in A|B) ;; *) USB_PRESET_NEXT=$USB_PRESET_ACTIVE;; esac
+    echo "USB_PRESET_ACTIVE=$USB_PRESET_ACTIVE"
+    echo "USB_PRESET_NEXT=$USB_PRESET_NEXT"
     echo "USB_A_MODE=$(cat /sys/devices/platform/usb@fe900000/dwc3_mode 2>/dev/null)"
     [ "$USB_A_DT" = otg ] && echo 'USB_A_SWITCHABLE=1' || echo 'USB_A_SWITCHABLE=0'
     echo "USB_A_ATTACHED=$(usb_attached_devices)"
-    echo "USB_GADGET_STATE=$(cat /sys/class/udc/fe900000.dwc3/state 2>/dev/null)"
-    echo "USB_GADGET_UDC=$(cat /config/usb_gadget/g1/UDC 2>/dev/null)"
+    USB_GADGET_UDC=$(cat /config/usb_gadget/g1/UDC 2>/dev/null)
+    echo "USB_GADGET_STATE=$(cat "/sys/class/udc/$USB_GADGET_UDC/state" 2>/dev/null)"
+    echo "USB_GADGET_UDC=$USB_GADGET_UDC"
+}
+
+usb_image_hash() {
+    sha1sum "$1" 2>/dev/null | cut -d ' ' -f 1
+}
+
+usb_preset_hashes() {
+    case "$1" in
+        A)
+            EXPECT_RESOURCE=e013e40124d32e1f0ba36e23b6aa0dfada7d1b96
+            EXPECT_BOOT=480677902d028b2ef26bab7f6944ec6cdae05efa ;;
+        B)
+            EXPECT_RESOURCE=0938854fa45cbd74b4ac6a81aa555b366e018486
+            EXPECT_BOOT=7b53384da8481a1cb28b3254b1dbb057ae24212d ;;
+        *) return 2 ;;
+    esac
+}
+
+usb_preset_apply() {
+    TARGET="$1"
+    usb_preset_hashes "$TARGET" || { echo '预设只能是 A 或 B'; return 2; }
+    case "$TARGET" in A) TARGET_FILE=a;; B) TARGET_FILE=b;; esac
+    PRESETS="$BASE/usb-presets"
+    RESOURCE_IMAGE="$PRESETS/resource-mode-$TARGET_FILE.img"
+    BOOT_IMAGE="$PRESETS/boot-mode-$TARGET_FILE.img"
+    [ "$(blockdev --getsize64 /dev/block/mmcblk1p4)" = 16777216 ] &&
+        [ "$(blockdev --getsize64 /dev/block/mmcblk1p6)" = 33554432 ] || {
+        echo '启动分区大小与此板备份不符，拒绝写入'; return 3
+    }
+    [ "$(usb_image_hash "$RESOURCE_IMAGE")" = "$EXPECT_RESOURCE" ] &&
+        [ "$(usb_image_hash "$BOOT_IMAGE")" = "$EXPECT_BOOT" ] || {
+        echo '预设镜像缺失或校验失败，拒绝写入'; return 3
+    }
+    CURRENT_RESOURCE=$(usb_image_hash /dev/block/mmcblk1p4)
+    CURRENT_BOOT=$(usb_image_hash /dev/block/mmcblk1p6)
+    if [ "$CURRENT_RESOURCE" = "$EXPECT_RESOURCE" ] && [ "$CURRENT_BOOT" = "$EXPECT_BOOT" ]; then
+        printf '%s' "$TARGET" > "$BASE/config/usb_preset"
+        echo "预设 $TARGET 已在启动分区，重启后继续使用"
+        return 0
+    fi
+    SOURCE=
+    usb_preset_hashes A
+    [ "$CURRENT_RESOURCE" = "$EXPECT_RESOURCE" ] && [ "$CURRENT_BOOT" = "$EXPECT_BOOT" ] && SOURCE=A
+    usb_preset_hashes B
+    [ "$CURRENT_RESOURCE" = "$EXPECT_RESOURCE" ] && [ "$CURRENT_BOOT" = "$EXPECT_BOOT" ] && SOURCE=B
+    [ -n "$SOURCE" ] || { echo '当前启动分区不是已验证的 A/B 原始镜像，拒绝覆盖'; return 3; }
+    case "$SOURCE" in A) SOURCE_FILE=a;; B) SOURCE_FILE=b;; esac
+    OLD_RESOURCE="$PRESETS/resource-mode-$SOURCE_FILE.img"
+    OLD_BOOT="$PRESETS/boot-mode-$SOURCE_FILE.img"
+    usb_preset_hashes "$SOURCE"
+    [ "$(usb_image_hash "$OLD_RESOURCE")" = "$EXPECT_RESOURCE" ] &&
+        [ "$(usb_image_hash "$OLD_BOOT")" = "$EXPECT_BOOT" ] || {
+        echo '回滚镜像校验失败，拒绝写入'; return 3
+    }
+    usb_preset_hashes "$TARGET"
+    dd if="$RESOURCE_IMAGE" of=/dev/block/mmcblk1p4 bs=1048576 >/dev/null 2>&1 &&
+        dd if="$BOOT_IMAGE" of=/dev/block/mmcblk1p6 bs=1048576 >/dev/null 2>&1
+    sync
+    if [ "$(usb_image_hash /dev/block/mmcblk1p4)" != "$EXPECT_RESOURCE" ] ||
+        [ "$(usb_image_hash /dev/block/mmcblk1p6)" != "$EXPECT_BOOT" ]; then
+        dd if="$OLD_RESOURCE" of=/dev/block/mmcblk1p4 bs=1048576 >/dev/null 2>&1
+        dd if="$OLD_BOOT" of=/dev/block/mmcblk1p6 bs=1048576 >/dev/null 2>&1
+        sync
+        echo '写入校验失败，已尝试恢复原预设；请检查分区后再重启'
+        return 4
+    fi
+    printf '%s' "$TARGET" > "$BASE/config/usb_preset"
+    echo "已写入预设 $TARGET；下次重启生效，当前 USB 连接保持不变"
 }
 
 usb_set() {
-    [ "$1" = type_a ] || { echo '此固件只允许切换 USB3 Type-A；Type-C 的设备树固定为 Host'; return 2; }
+    [ "$1" = type_a ] || { echo '运行时接口仅支持 USB3 Type-A；双口布局请使用下次重启生效的 A/B 预设'; return 2; }
     case "$2" in host|peripheral|otg) ;; *) echo '模式必须为 host、peripheral 或 otg'; return 2;; esac
     [ "$(usb_dt_mode fe900000)" = otg ] || { echo '设备树未配置 OTG，拒绝运行时切换'; return 2; }
     MODE_FILE=/sys/devices/platform/usb@fe900000/dwc3_mode
@@ -506,6 +583,7 @@ case "$1" in
     ethernet-apply) apply_ethernet ;;
     usb-status) usb_status ;;
     usb-set) usb_set "$2" "$3" ;;
+    usb-preset) usb_preset_apply "$2" ;;
     log) show_log "$2" ;;
-    *) echo 'usage: controller.sh {once|daemon|status|wifi ap|sta|ap-config|apply-port|log}'; exit 1 ;;
+    *) echo 'usage: controller.sh {once|daemon|status|wifi ap|sta|ap-config|apply-port|usb-status|usb-preset A|B|log}'; exit 1 ;;
 esac
