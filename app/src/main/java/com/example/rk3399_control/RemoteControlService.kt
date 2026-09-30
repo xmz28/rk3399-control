@@ -112,6 +112,7 @@ class RemoteControlService : Service() {
                 .put("pppoeStatus", snapshot.pppoeStatus).put("wlanIp", snapshot.wlanIp)
                 .put("wifiMode", snapshot.wifiMode).put("ssid", snapshot.ssid)
                 .put("wifiBand", snapshot.wifiBand).put("channel", snapshot.channel)
+                .put("apSsid", snapshot.apSsid).put("apBand", snapshot.apBand).put("apChannel", snapshot.apChannel)
                 .put("usbCDeviceTree", snapshot.usbCDeviceTree).put("usbCMode", snapshot.usbCMode)
                 .put("usbADeviceTree", snapshot.usbADeviceTree).put("usbAMode", snapshot.usbAMode)
                 .put("usbASwitchable", snapshot.usbASwitchable).put("usbAAttached", snapshot.usbAAttached)
@@ -124,6 +125,20 @@ class RemoteControlService : Service() {
             val type = fullPath.substringAfter("type=", "system").substringBefore('&')
             require(type in setOf("system", "nas", "wifi", "controller")) { "Invalid log type" }
             return result(await { repository.readLog(type, it) })
+        }
+        if (method == "GET" && path == "/api/v1/wifi/scan") {
+            val scan = await { repository.scanWifi(it) }
+            if (scan.code != 0) return result(scan)
+            val networks = JSONArray()
+            val seen = mutableSetOf<String>()
+            scan.output.lineSequence().drop(2).forEach { line ->
+                val fields = line.split('\t', limit = 5)
+                if (fields.size == 5 && fields[4].isNotBlank() && seen.add(fields[4])) {
+                    networks.put(JSONObject().put("ssid", fields[4]).put("frequency", fields[1].toIntOrNull() ?: 0)
+                        .put("signal", fields[2].toIntOrNull() ?: -100).put("security", fields[3]))
+                }
+            }
+            return JSONObject().put("ok", true).put("networks", networks)
         }
         if (method != "POST") throw IllegalArgumentException("Unknown endpoint")
         return when (path) {
@@ -142,6 +157,10 @@ class RemoteControlService : Service() {
                 require(mode in setOf("ap", "sta")) { "Invalid Wi-Fi mode" }
                 result(await { repository.setWifiMode(mode == "ap", it) })
             }
+            "/api/v1/wifi/connect" -> result(await {
+                repository.connectWifi(body.getString("ssid"), body.getString("password"), it)
+            })
+            "/api/v1/nas-password" -> result(await { repository.updateNasPassword(body.getString("password"), it) })
             "/api/v1/ap" -> result(await {
                 repository.updateAp(body.getString("ssid"), body.getString("password"),
                     body.getString("band"), body.getInt("channel"), it)

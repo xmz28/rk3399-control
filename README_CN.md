@@ -15,6 +15,8 @@
 - 查看系统、NAS、Wi-Fi、控制器日志。
 - 执行带 60 秒超时的 root shell 命令。
 - 在局域网开放 8765 端口供手机端远程查看状态、切换服务、修改端口和网络、读取日志。
+- 远程切换 STA 后扫描附近网络并连接 WPA/WPA2 热点；远程一次修改 Samba、HTTP、
+  FTP 和 SFTP 的共用 `admin` 密码。
 - 查看两个 USB3 控制器角色；对设备树原始模式为 OTG 的 USB3 Type-A 提供临时
   Host / Device / OTG 切换，本机与手机远程控制均可操作。
 
@@ -33,6 +35,9 @@ FTP 和 SFTP 由 Primitive FTPd 的同一进程管理，因此共用一个启停
 认证；手机端可记住密码，并可在验证后修改控制密码。只接受私网/本机来源，远程
 接口不开放 root 终端或文件读写。当前是明文 HTTP，简单密码仅适合可信家用局域网；
 不要将 8765 端口映射到公网。远程切换 AP/STA 或网口角色可能使当前连接断开。
+NAS 密码与控制密码是两套独立凭据；改 NAS 密码时会同步修改 Samba 账号、
+Copyparty 账号和 Primitive FTPd 的 FTP/SFTP 账号。NAS 密码限定为 4–64 位
+字母、数字或 `._@#-`，避免供应商配置格式与脚本转义不一致。
 
 Primitive FTPd 的偏好文件必须保持应用 UID 与 SELinux 标签。控制脚本仅在
 开机开关变化时原位修改其偏好；修改 FTP/SFTP 端口也原位写入，避免服务无法启动。
@@ -77,6 +82,11 @@ Debug APK：`app/build/outputs/apk/debug/app-debug.apk`
   设备树模式为 `otg`；已验证同模式请求无副作用、Type-C 请求被拒绝、连接 ADB
   时切换 Type-A Host 被拒绝。尚未拔线验证真正的角色切换与重新枚举。
 - Redmi K30 5G 手机上已显示远程 USB 状态与禁用态；带线时三个切换按钮不可用。
+- AP→STA 已通过有线控制接口切换，STA 扫描可返回附近 SSID、频率和信号强度；
+  STA→AP 可恢复 `RK3399` 热点。后台已修复每 15 秒重复清理 STA 地址的问题。
+- NAS 共用密码临时改为测试密码后，HTTP、FTP、Samba 登录均成功；随后恢复
+  `admin` 并复验 HTTP、Samba。FTP/SFTP 使用同一份 Primitive FTPd 密码配置，
+  本轮未单独执行 SFTP 登录。手机号端的 STA 入网操作尚待有可用密码的热点验证。
 
 - 固定 LAN：系统静态地址为 `192.168.1.1/24`，有线 DHCP 与热点 DHCP 可同时运行。
 - WAN 静态 IP：IP、前缀、网关和两个 DNS 均能写入系统以太网配置。

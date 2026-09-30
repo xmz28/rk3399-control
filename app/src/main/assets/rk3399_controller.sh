@@ -269,7 +269,16 @@ wifi_ap() {
 }
 
 manage_wifi() {
-    if [ "$(cat "$BASE/config/wifi_ap" 2>/dev/null)" = "0" ]; then wifi_sta; else wifi_ap; fi
+    if [ "$(cat "$BASE/config/wifi_ap" 2>/dev/null)" = "0" ]; then
+        # STA must not be torn down every supervisor tick: that used to flush
+        # DHCP addresses every 15 seconds and made joining a network impossible.
+        if [ "$(getprop init.svc.wifi_hotspot)" = running ] || pidof hostapd >/dev/null 2>&1 ||
+            [ "$(settings get global wifi_on 2>/dev/null)" != 1 ]; then
+            wifi_sta
+        fi
+    else
+        wifi_ap
+    fi
 }
 
 stop_legacy_watchdogs() {
@@ -300,16 +309,27 @@ print_status() {
     echo "PPPOE_STATUS=$(getprop net.pppoe.status)"
     echo "ETH_IP=$(ip -4 addr show dev eth0 2>/dev/null | grep ' inet ' | head -n 1 | sed 's/^[[:space:]]*//')"
     echo "WLAN_IP=$(ip -4 addr show dev wlan0 2>/dev/null | grep ' inet ' | head -n 1 | sed 's/^[[:space:]]*//')"
-    if pidof hostapd >/dev/null 2>&1; then echo 'WIFI_MODE=AP'; else echo 'WIFI_MODE=STA'; fi
+    if pidof hostapd >/dev/null 2>&1; then WIFI_NOW=AP; else WIFI_NOW=STA; fi
+    echo "WIFI_MODE=$WIFI_NOW"
     SSID_NOW=$(iw dev wlan0 info 2>/dev/null | sed -n 's/^[[:space:]]*ssid //p' | head -n 1)
-    [ -n "$SSID_NOW" ] || SSID_NOW=$(sed -n 's/^ssid=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
+    if [ "$WIFI_NOW" = AP ]; then
+        [ -n "$SSID_NOW" ] || SSID_NOW=$(sed -n 's/^ssid=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
+    else
+        SSID_NOW=$(wpa_cli -i wlan0 status 2>/dev/null | sed -n 's/^ssid=//p' | head -n 1)
+    fi
     CHANNEL_NOW=$(iw dev wlan0 info 2>/dev/null | grep 'channel ' | head -n 1 | sed 's/.*channel \([0-9][0-9]*\).*/\1/')
-    [ -n "$CHANNEL_NOW" ] || CHANNEL_NOW=$(sed -n 's/^channel=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
+    if [ "$WIFI_NOW" = AP ]; then
+        [ -n "$CHANNEL_NOW" ] || CHANNEL_NOW=$(sed -n 's/^channel=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
+    fi
     BAND_NOW=2g
     case "$CHANNEL_NOW" in 36|40|44|48|52|56|60|64|149|153|157|161|165) BAND_NOW=5g;; esac
     echo "SSID=$SSID_NOW"
     echo "BAND=$BAND_NOW"
     echo "CHANNEL=$CHANNEL_NOW"
+    echo "AP_SSID=$(sed -n 's/^ssid=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)"
+    AP_CHANNEL=$(sed -n 's/^channel=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
+    echo "AP_CHANNEL=$AP_CHANNEL"
+    case "$AP_CHANNEL" in 36|40|44|48|52|56|60|64|149|153|157|161|165) echo 'AP_BAND=5g';; *) echo 'AP_BAND=2g';; esac
     usb_status
     port_open 445; R=$?; enabled samba; E=$?; echo "SERVICE|samba|Samba|445|$((1-R))|$((1-E))|0|1"
     port_open "$HTTP_PORT"; R=$?; enabled http; E=$?; echo "SERVICE|http|HTTP 文件管理|$HTTP_PORT|$((1-R))|$((1-E))|1|1"
@@ -425,10 +445,19 @@ ap_config() {
     printf '0' > "$BASE/config/wifi_ap"
     wifi_sta
     sleep 5
-    wifi_ap
-    sleep 1
     printf '1' > "$BASE/config/wifi_ap"
-    echo "热点配置已保存，正在启动 SSID=$SSID BAND=$BAND CH=$CH"
+    wifi_ap
+    AP_TRIES=0
+    while [ "$AP_TRIES" -lt 24 ]; do
+        pidof hostapd >/dev/null 2>&1 &&
+            iw dev wlan0 info 2>/dev/null | grep -q 'type AP' && break
+        sleep 1; AP_TRIES=$((AP_TRIES + 1))
+    done
+    pidof hostapd >/dev/null 2>&1 && iw dev wlan0 info 2>/dev/null | grep -q 'type AP' || {
+        echo "热点配置已保存，但 AP 未启动；请查看 Wi-Fi 日志"
+        return 4
+    }
+    echo "热点已启动：SSID=$SSID BAND=$BAND CH=$CH"
 }
 
 show_log() {
@@ -452,7 +481,26 @@ case "$1" in
         while true; do manage_ethernet; sleep 1; done
         ;;
     status) print_status ;;
-    wifi) [ "$2" = sta ] && { printf '0' > "$BASE/config/wifi_ap"; wifi_sta; } || { printf '1' > "$BASE/config/wifi_ap"; wifi_ap; } ;;
+    wifi)
+        case "$2" in
+            sta)
+                printf '0' > "$BASE/config/wifi_ap"; wifi_sta
+                WIFI_TRIES=0
+                while pidof hostapd >/dev/null 2>&1 && [ "$WIFI_TRIES" -lt 10 ]; do
+                    sleep 1; WIFI_TRIES=$((WIFI_TRIES + 1))
+                done
+                pidof hostapd >/dev/null 2>&1 && { echo 'STA 切换未完成'; exit 3; }
+                echo '已切换 STA，可扫描附近 Wi-Fi' ;;
+            ap)
+                printf '1' > "$BASE/config/wifi_ap"; wifi_ap
+                WIFI_TRIES=0
+                until pidof hostapd >/dev/null 2>&1 || [ "$WIFI_TRIES" -ge 18 ]; do
+                    sleep 1; WIFI_TRIES=$((WIFI_TRIES + 1))
+                done
+                pidof hostapd >/dev/null 2>&1 || { echo 'AP 未启动，请查看 Wi-Fi 日志'; exit 3; }
+                echo '热点已启动' ;;
+            *) echo '模式必须为 ap 或 sta'; exit 2 ;;
+        esac ;;
     ap-config) ap_config "$2" "$3" "$4" "$5" ;;
     apply-port) apply_port "$2" "$3" ;;
     ethernet-apply) apply_ethernet ;;

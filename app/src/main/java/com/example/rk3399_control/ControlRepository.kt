@@ -1,9 +1,13 @@
 package com.example.rk3399_control
 
 import android.content.Context
+import android.net.wifi.WifiConfiguration
+import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.Executors
 
 data class ServiceInfo(
@@ -32,6 +36,9 @@ data class DeviceSnapshot(
     val ssid: String = "—",
     val wifiBand: String = "2g",
     val channel: String = "—",
+    val apSsid: String = "—",
+    val apBand: String = "2g",
+    val apChannel: String = "1",
     val usbCDeviceTree: String = "—",
     val usbCMode: String = "—",
     val usbADeviceTree: String = "—",
@@ -112,10 +119,71 @@ class ControlRepository(private val context: Context) {
     }
 
     fun setWifiMode(ap: Boolean, callback: (ShellResult) -> Unit) {
-        prefs.edit().putBoolean("wifi_ap", ap).apply()
         executor.execute {
             val value = if (ap) "1" else "0"
             val result = RootShell.run("printf '$value' > $REMOTE/config/wifi_ap; $REMOTE/controller.sh wifi ${if (ap) "ap" else "sta"}", 30)
+            if (result.code == 0) prefs.edit().putBoolean("wifi_ap", ap).apply()
+            main.post { callback(result) }
+        }
+    }
+
+    fun scanWifi(callback: (ShellResult) -> Unit) = runAsync(
+        "[ \"\$(cat $REMOTE/config/wifi_ap)\" = 0 ] || { echo '请先切换到 STA 模式'; exit 2; }; " +
+            "wpa_cli -i wlan0 scan; sleep 4; wpa_cli -i wlan0 scan_results", 15, callback)
+
+    fun connectWifi(ssid: String, password: String, callback: (ShellResult) -> Unit) {
+        if (ssid.isBlank() || ssid.toByteArray(Charsets.UTF_8).size > 32 ||
+            password.length !in 8..63 || password.any { it == '\n' || it == '\r' }) {
+            callback(ShellResult(2, "SSID 或 WPA 密码无效（密码需 8–63 位）")); return
+        }
+        executor.execute {
+            val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val result = try {
+                if (!manager.isWifiEnabled) manager.isWifiEnabled = true
+                val config = WifiConfiguration().apply {
+                    SSID = "\"${ssid.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+                    preSharedKey = "\"${password.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+                }
+                val id = manager.addNetwork(config)
+                if (id < 0 || !manager.enableNetwork(id, true) || !manager.reconnect())
+                    ShellResult(2, "Wi‑Fi 连接请求未被系统接受")
+                else ShellResult(0, "已请求连接 $ssid，请稍后刷新状态确认 IP")
+            } catch (e: Exception) { ShellResult(2, e.message ?: "连接失败") }
+            main.post { callback(result) }
+        }
+    }
+
+    fun updateNasPassword(password: String, callback: (ShellResult) -> Unit) {
+        if (!password.matches(Regex("[A-Za-z0-9._@#-]{4,64}"))) {
+            callback(ShellResult(2, "共用密码需 4–64 位英文字母、数字或 ._@#-")); return
+        }
+        executor.execute {
+            val hash = Base64.encodeToString(
+                MessageDigest.getInstance("SHA-512").digest((password + "H§R&q}9").toByteArray(Charsets.UTF_8)),
+                Base64.NO_WRAP
+            )
+            val root = "/data/local/alpine-nas"
+            val ftp = "/data/data/org.primftpd/shared_prefs/org.primftpd_preferences.xml"
+            val backup = "$REMOTE/config/nas-password-backup"
+            val quoted = RootShell.quote(password)
+            val command = "set -e; mkdir -p $backup; chmod 0700 $backup; " +
+                "[ -f $root/var/lib/samba/private/passdb.tdb ] && [ -f $root/etc/copyparty.conf ] && [ -f $ftp ]; " +
+                "cp $root/var/lib/samba/private/passdb.tdb $backup/passdb.tdb; " +
+                "cp $root/etc/copyparty.conf $backup/copyparty.conf; cp $ftp $backup/ftp.xml; " +
+                "printf '%s\\n%s\\n' $quoted $quoted | chroot $root /usr/bin/smbpasswd -s admin; " +
+                "sed -i 's/^[[:space:]]*admin:[[:space:]].*/  admin: $password/' $root/etc/copyparty.conf; " +
+                "am force-stop org.primftpd; " +
+                "sed 's|<string name=\"passwordPref\">[^<]*</string>|<string name=\"passwordPref\">$hash</string>|' $ftp > $backup/ftp-new.xml; " +
+                "cat $backup/ftp-new.xml > $ftp; " +
+                "killall copyparty-sfx.py 2>/dev/null || true; $REMOTE/controller.sh once; " +
+                "echo 'Samba、HTTP、FTP、SFTP 已更新为同一个 admin 密码'"
+            val result = RootShell.run(command, 40)
+            if (result.code != 0) {
+                RootShell.run("[ ! -f $backup/passdb.tdb ] || cat $backup/passdb.tdb > $root/var/lib/samba/private/passdb.tdb; " +
+                    "[ ! -f $backup/copyparty.conf ] || cp $backup/copyparty.conf $root/etc/copyparty.conf; " +
+                    "[ ! -f $backup/ftp.xml ] || cat $backup/ftp.xml > $ftp; $REMOTE/controller.sh once", 20)
+            }
+            RootShell.run("rm -f $backup/passdb.tdb $backup/copyparty.conf $backup/ftp.xml $backup/ftp-new.xml; rmdir $backup", 5)
             main.post { callback(result) }
         }
     }
@@ -134,11 +202,11 @@ class ControlRepository(private val context: Context) {
             callback(ShellResult(2, "频段或信道无效"))
             return
         }
-        prefs.edit().putString("ap_ssid", ssid).putString("ap_password", password)
-            .putString("ap_band", band).putInt("ap_channel", channel).apply()
         executor.execute {
             val command = "$REMOTE/controller.sh ap-config ${RootShell.quote(ssid)} ${RootShell.quote(password)} $band $channel"
             val result = RootShell.run(command, 35)
+            if (result.code == 0) prefs.edit().putString("ap_ssid", ssid).putString("ap_password", password)
+                .putString("ap_band", band).putInt("ap_channel", channel).apply()
             main.post { callback(result) }
         }
     }
@@ -270,6 +338,9 @@ class ControlRepository(private val context: Context) {
             ssid = values["SSID"] ?: "—",
             wifiBand = values["BAND"] ?: "2g",
             channel = values["CHANNEL"] ?: "—",
+            apSsid = values["AP_SSID"] ?: "—",
+            apBand = values["AP_BAND"] ?: "2g",
+            apChannel = values["AP_CHANNEL"] ?: "1",
             usbCDeviceTree = values["USB_C_DT"] ?: "—",
             usbCMode = values["USB_C_MODE"] ?: "—",
             usbADeviceTree = values["USB_A_DT"] ?: "—",
