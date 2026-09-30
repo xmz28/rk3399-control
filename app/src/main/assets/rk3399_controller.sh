@@ -211,6 +211,15 @@ manage_nas() {
     fi
 }
 
+set_ftp_boot_pref() {
+    [ -f "$FTP_PREF" ] || return 0
+    grep -q "name=\"startOnBootPref\" value=\"$1\"" "$FTP_PREF" && return 0
+    TMP="$BASE/config/ftp-boot.$$"
+    sed "s/name=\"startOnBootPref\" value=\"[a-z]*\"/name=\"startOnBootPref\" value=\"$1\"/" "$FTP_PREF" > "$TMP"
+    cat "$TMP" > "$FTP_PREF"
+    rm -f "$TMP"
+}
+
 manage_ftp() {
     FTP_PORT=$(config_port ftp 12345)
     SFTP_PORT=$(config_port sftp 1234)
@@ -218,10 +227,10 @@ manage_ftp() {
         if ! port_open "$FTP_PORT" && ! port_open "$SFTP_PORT"; then
             am start --user 0 -n org.primftpd/org.primftpd.ui.StartServerAndExitActivity >/dev/null 2>&1 || true
         fi
-        [ -f "$FTP_PREF" ] && sed -i 's/name="startOnBootPref" value="false"/name="startOnBootPref" value="true"/' "$FTP_PREF"
+        set_ftp_boot_pref true
     else
         am start --user 0 -n org.primftpd/org.primftpd.ui.StopServerAndExitActivity >/dev/null 2>&1 || am force-stop org.primftpd
-        [ -f "$FTP_PREF" ] && sed -i 's/name="startOnBootPref" value="true"/name="startOnBootPref" value="false"/' "$FTP_PREF"
+        set_ftp_boot_pref false
     fi
 }
 
@@ -301,6 +310,7 @@ print_status() {
     echo "SSID=$SSID_NOW"
     echo "BAND=$BAND_NOW"
     echo "CHANNEL=$CHANNEL_NOW"
+    usb_status
     port_open 445; R=$?; enabled samba; E=$?; echo "SERVICE|samba|Samba|445|$((1-R))|$((1-E))|0|1"
     port_open "$HTTP_PORT"; R=$?; enabled http; E=$?; echo "SERVICE|http|HTTP 文件管理|$HTTP_PORT|$((1-R))|$((1-E))|1|1"
     port_open "$FTP_PORT"; R=$?; enabled ftp; E=$?; echo "SERVICE|ftp|FTP / SFTP|$FTP_PORT|$((1-R))|$((1-E))|1|1"
@@ -308,6 +318,66 @@ print_status() {
     port_open 3000; R=$?; enabled speed; E=$?; echo "SERVICE|speed|OpenSpeedTest|3000|$((1-R))|$((1-E))|0|1"
     port_open "$IPERF_PORT"; R=$?; enabled iperf; E=$?; echo "SERVICE|iperf|iperf3 Server|$IPERF_PORT|$((1-R))|$((1-E))|1|1"
     udp_port_open 5353; R=$?; enabled mdns; E=$?; echo "SERVICE|mdns|mDNS / a.local|5353|$((1-R))|$((1-E))|0|1"
+}
+
+usb_dt_mode() {
+    cat "/sys/firmware/devicetree/base/usb@$1/dwc3@$1/dr_mode" 2>/dev/null | tr -d '\000'
+}
+
+usb_attached_devices() {
+    USB_COUNT=0
+    for USB_VENDOR in $(find /sys/devices/platform/usb@fe900000 -name idVendor 2>/dev/null); do
+        [ "$(cat "$USB_VENDOR" 2>/dev/null)" = 1d6b ] || USB_COUNT=$((USB_COUNT + 1))
+    done
+    echo "$USB_COUNT"
+}
+
+usb_status() {
+    echo "USB_C_DT=$(usb_dt_mode fe800000)"
+    echo "USB_C_MODE=$(cat /sys/devices/platform/usb@fe800000/dwc3_mode 2>/dev/null)"
+    USB_A_DT=$(usb_dt_mode fe900000)
+    echo "USB_A_DT=$USB_A_DT"
+    echo "USB_A_MODE=$(cat /sys/devices/platform/usb@fe900000/dwc3_mode 2>/dev/null)"
+    [ "$USB_A_DT" = otg ] && echo 'USB_A_SWITCHABLE=1' || echo 'USB_A_SWITCHABLE=0'
+    echo "USB_A_ATTACHED=$(usb_attached_devices)"
+    echo "USB_GADGET_STATE=$(cat /sys/class/udc/fe900000.dwc3/state 2>/dev/null)"
+    echo "USB_GADGET_UDC=$(cat /config/usb_gadget/g1/UDC 2>/dev/null)"
+}
+
+usb_set() {
+    [ "$1" = type_a ] || { echo '此固件只允许切换 USB3 Type-A；Type-C 的设备树固定为 Host'; return 2; }
+    case "$2" in host|peripheral|otg) ;; *) echo '模式必须为 host、peripheral 或 otg'; return 2;; esac
+    [ "$(usb_dt_mode fe900000)" = otg ] || { echo '设备树未配置 OTG，拒绝运行时切换'; return 2; }
+    MODE_FILE=/sys/devices/platform/usb@fe900000/dwc3_mode
+    [ -w "$MODE_FILE" ] || { echo '内核没有可写的角色切换接口'; return 2; }
+    CURRENT=$(cat "$MODE_FILE")
+    [ "$CURRENT" = "$2" ] && { echo "USB3 Type-A 已是 $2"; return 0; }
+    if [ "$CURRENT" != host ]; then
+        UDC_STATE=$(cat /sys/class/udc/fe900000.dwc3/state 2>/dev/null)
+        [ -z "$UDC_STATE" ] || [ "$UDC_STATE" = 'not attached' ] || {
+            echo "USB 线仍连接（$UDC_STATE）；先拔下连接电脑的数据线再切换角色"; return 3;
+        }
+    fi
+    if [ "$2" = host ]; then
+        [ ! -f /config/usb_gadget/g1/UDC ] || echo '' > /config/usb_gadget/g1/UDC
+    elif [ "$CURRENT" = host ] && [ "$(usb_attached_devices)" -gt 0 ]; then
+        echo 'USB3 Type-A 有外设连接；请安全卸载并拔下外设后再切换'; return 3
+    fi
+    if ! echo "$2" > "$MODE_FILE"; then
+        if [ "$2" = host ] && [ -e /sys/class/udc/fe900000.dwc3 ] && [ -f /config/usb_gadget/g1/UDC ]; then
+            echo fe900000.dwc3 > /config/usb_gadget/g1/UDC 2>/dev/null || true
+        fi
+        echo '内核拒绝切换 USB 角色'
+        return 4
+    fi
+    sleep 1
+    NEW_MODE=$(cat "$MODE_FILE")
+    [ "$NEW_MODE" = "$2" ] || { echo "切换未生效，当前为 $NEW_MODE"; return 4; }
+    if [ "$2" != host ] && [ -f /config/usb_gadget/g1/UDC ] &&
+        [ -z "$(cat /config/usb_gadget/g1/UDC 2>/dev/null)" ] && [ -e /sys/class/udc/fe900000.dwc3 ]; then
+        echo fe900000.dwc3 > /config/usb_gadget/g1/UDC || true
+    fi
+    echo "USB3 Type-A 已切换为 $NEW_MODE；重新插线后再检查设备枚举"
 }
 
 apply_port() {
@@ -318,8 +388,19 @@ apply_port() {
     case "$ID" in
         http) sed -i "s/^[[:space:]]*p:.*/  p: $PORT/" "$ROOT/etc/copyparty.conf"; kill_script copyparty-sfx.py ;;
         iperf) kill_script /usr/bin/iperf3 ;;
-        ftp) [ -f "$FTP_PREF" ] && sed -i "s/name=\"portPref\" value=\"[0-9]*\"/name=\"portPref\" value=\"$PORT\"/" "$FTP_PREF"; am force-stop org.primftpd ;;
-        sftp) [ -f "$FTP_PREF" ] && sed -i "s/name=\"securePortPref\" value=\"[0-9]*\"/name=\"securePortPref\" value=\"$PORT\"/" "$FTP_PREF"; am force-stop org.primftpd ;;
+        ftp|sftp)
+            am force-stop org.primftpd
+            if [ -f "$FTP_PREF" ]; then
+                TMP="$BASE/config/ftp-pref.$$"
+                if [ "$ID" = ftp ]; then
+                    sed "s|<string name=\"portPref\">[0-9]*</string>|<string name=\"portPref\">$PORT</string>|" "$FTP_PREF" > "$TMP"
+                else
+                    sed "s|<string name=\"securePortPref\">[0-9]*</string>|<string name=\"securePortPref\">$PORT</string>|" "$FTP_PREF" > "$TMP"
+                fi
+                cat "$TMP" > "$FTP_PREF"
+                rm -f "$TMP"
+            fi
+            ;;
         *) echo "不支持修改 $ID 端口"; return 2 ;;
     esac
 }
@@ -375,6 +456,8 @@ case "$1" in
     ap-config) ap_config "$2" "$3" "$4" "$5" ;;
     apply-port) apply_port "$2" "$3" ;;
     ethernet-apply) apply_ethernet ;;
+    usb-status) usb_status ;;
+    usb-set) usb_set "$2" "$3" ;;
     log) show_log "$2" ;;
     *) echo 'usage: controller.sh {once|daemon|status|wifi ap|sta|ap-config|apply-port|log}'; exit 1 ;;
 esac

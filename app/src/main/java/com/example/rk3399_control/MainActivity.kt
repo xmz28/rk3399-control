@@ -1,6 +1,7 @@
 package com.example.rk3399_control
 
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -30,6 +31,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        startService(Intent(this, RemoteControlService::class.java))
         enableEdgeToEdge()
         setContent { Rk3399_controlTheme(dynamicColor = false) { ControlApp() } }
     }
@@ -98,7 +100,8 @@ private fun ControlApp() {
                         Page.NETWORK -> NetworkPage(snapshot, busy,
                             onMode = { ap -> busy = true; repository.setWifiMode(ap) { result("已切换到 ${if (ap) "AP" else "STA"} 模式", it) } },
                             onApply = { ssid, pass, band, channel -> busy = true; repository.updateAp(ssid, pass, band, channel) { result("热点配置已保存", it) } },
-                            onEthernet = { request -> busy = true; repository.setEthernet(request) { result("网口模式已应用", it) } }
+                            onEthernet = { request -> busy = true; repository.setEthernet(request) { result("网口模式已应用", it) } },
+                            onUsbMode = { mode -> busy = true; repository.setUsbMode("type_a", mode) { result("USB3 Type-A 已切换为 $mode", it) } }
                         )
                         Page.LOGS -> LogsPage(repository)
                         Page.TERMINAL -> TerminalPage(repository)
@@ -198,7 +201,8 @@ private fun NetworkPage(
     busy: Boolean,
     onMode: (Boolean) -> Unit,
     onApply: (String, String, String, Int) -> Unit,
-    onEthernet: (EthernetRequest) -> Unit
+    onEthernet: (EthernetRequest) -> Unit,
+    onUsbMode: (String) -> Unit
 ) {
     var ssid by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
@@ -213,6 +217,7 @@ private fun NetworkPage(
     var dns2 by rememberSaveable { mutableStateOf("1.1.1.1") }
     var pppoeUser by rememberSaveable { mutableStateOf("") }
     var pppoePassword by rememberSaveable { mutableStateOf("") }
+    var pendingUsbMode by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(s.ssid) { if (ssid.isBlank() && s.ssid != "—") ssid = s.ssid }
     LaunchedEffect(s.wifiBand, s.channel) {
         band = s.wifiBand.ifBlank { "2g" }
@@ -278,6 +283,28 @@ private fun NetworkPage(
             onEthernet(EthernetRequest(ethMode, autoWait.toInt(), staticIp, prefix.toInt(), gateway, dns1, dns2, pppoeUser, pppoePassword))
         }, enabled = !busy && ethernetValid, modifier = Modifier.height(52.dp)) { Text("应用网口配置") }
         WarningCard("切换网口模式会重建 eth0 地址和默认路由，可能立即中断通过网线进行的 ADB、终端或页面连接。")
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        SectionTitle("USB 端口角色（本次运行有效）")
+        Text("Type-C · fe800000 · 设备树 ${s.usbCDeviceTree} · 当前 ${s.usbCMode}")
+        Text("USB3 Type-A · fe900000 · 设备树 ${s.usbADeviceTree} · 当前 ${s.usbAMode}")
+        Text("ADB Gadget：${s.usbGadgetUdc} · ${s.usbGadgetState}；Type-A 已接外设 ${s.usbAAttached} 个", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        WarningCard("当前固件的 Type-C 在设备树中固定为 Host，不能安全地由 App 改成 Device。Type-A 原始配置为 OTG，可运行时切换；先拔掉电脑数据线或 USB 外设。切换可能断开 ADB，重启后恢复固件默认角色。")
+        val usbCableConnected = s.usbAMode != "host" && s.usbGadgetState !in setOf("—", "", "not attached")
+        val usbCanSwitch = !busy && s.usbASwitchable && !usbCableConnected && s.usbAAttached == 0
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("host" to "Host", "peripheral" to "Device", "otg" to "OTG").forEach { (mode, label) ->
+                OutlinedButton(onClick = { pendingUsbMode = mode }, enabled = usbCanSwitch && s.usbAMode != mode) { Text("Type-A → $label") }
+            }
+        }
+        if (usbCableConnected) Text("USB 数据线仍连接，请拔线后刷新再切换。", color = MaterialTheme.colorScheme.error)
+        if (s.usbAAttached > 0) Text("Type-A 上有外设，请安全卸载并拔下后刷新。", color = MaterialTheme.colorScheme.error)
+    }
+    pendingUsbMode?.let { mode ->
+        AlertDialog(onDismissRequest = { pendingUsbMode = null }, title = { Text("确认切换 USB3 Type-A？") },
+            text = { Text("将切换为 $mode。请确认数据线和外设已拔下；USB ADB 可能断开，重启才会恢复固件默认角色。") },
+            confirmButton = { Button(onClick = { pendingUsbMode = null; onUsbMode(mode) }) { Text("确认切换") } },
+            dismissButton = { TextButton(onClick = { pendingUsbMode = null }) { Text("取消") } })
     }
 }
 

@@ -32,6 +32,14 @@ data class DeviceSnapshot(
     val ssid: String = "—",
     val wifiBand: String = "2g",
     val channel: String = "—",
+    val usbCDeviceTree: String = "—",
+    val usbCMode: String = "—",
+    val usbADeviceTree: String = "—",
+    val usbAMode: String = "—",
+    val usbASwitchable: Boolean = false,
+    val usbAAttached: Int = 0,
+    val usbGadgetState: String = "—",
+    val usbGadgetUdc: String = "—",
     val services: List<ServiceInfo> = emptyList(),
     val error: String? = null
 )
@@ -173,6 +181,14 @@ class ControlRepository(private val context: Context) {
 
     fun readLog(type: String, callback: (ShellResult) -> Unit) = runAsync("$REMOTE/controller.sh log ${safeId(type)}", 20, callback)
 
+    fun setUsbMode(port: String, mode: String, callback: (ShellResult) -> Unit) {
+        if (port != "type_a" || mode !in setOf("host", "peripheral", "otg")) {
+            callback(ShellResult(2, "此固件只支持 USB3 Type-A 的 Host / Device / OTG 切换"))
+            return
+        }
+        runAsync("$REMOTE/controller.sh usb-set type_a $mode", 20, callback)
+    }
+
     fun runTerminal(command: String, callback: (ShellResult) -> Unit) = runAsync(command, 60, callback)
 
     private fun runAsync(command: String, timeout: Long, callback: (ShellResult) -> Unit) {
@@ -254,6 +270,14 @@ class ControlRepository(private val context: Context) {
             ssid = values["SSID"] ?: "—",
             wifiBand = values["BAND"] ?: "2g",
             channel = values["CHANNEL"] ?: "—",
+            usbCDeviceTree = values["USB_C_DT"] ?: "—",
+            usbCMode = values["USB_C_MODE"] ?: "—",
+            usbADeviceTree = values["USB_A_DT"] ?: "—",
+            usbAMode = values["USB_A_MODE"] ?: "—",
+            usbASwitchable = values["USB_A_SWITCHABLE"] == "1",
+            usbAAttached = values["USB_A_ATTACHED"]?.toIntOrNull() ?: 0,
+            usbGadgetState = values["USB_GADGET_STATE"] ?: "—",
+            usbGadgetUdc = values["USB_GADGET_UDC"] ?: "—",
             services = services
         )
     }
