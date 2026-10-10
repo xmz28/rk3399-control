@@ -1,0 +1,9 @@
+# The RK3399 Control app owns eth0 from BOOT_COMPLETED onward. Keep the
+# vendor service definition for manual recovery, but do not auto-start it:
+# otherwise it races the app and may serve LAN DHCP on a router-facing port.
+service ethernet_role /system/bin/sh /system/bin/ethernet_role.sh
+    class late_start
+    user root
+    group root shell inet
+    seclabel u:r:init:s0
+    disabled

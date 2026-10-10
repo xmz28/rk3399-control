@@ -70,6 +70,14 @@ Android EthernetService 未跟踪 `eth0` 时停留在“连接中”。固定 LA
 本机 App 私有配置和 root 配置目录中；切换网口模式会短暂中断有线网络。当前
 实机自动探测等待值设为 20 秒。
 
+这台实机的旧固件还在 `sys.boot_completed=1` 时自动启动 `ethernet_role`，会在
+App 接管前抢先把路由器网线误配成 LAN。已备份原文件到
+`/data/local/rk3399-control/ethernet-role.original.rc`（电脑副本在
+`usb-preset-research/ethernet-role.original.rc`），并用
+`tools/ethernet-role.disabled.rc` 替换 `/system/etc/init/ethernet-role.rc`：只移除
+自动启动触发，保留可手动启动的服务定义。恢复时以 root 把备份复制回原路径，
+设置 0644 权限、执行 `restorecon`，再重启。其他固件不要直接套用此文件。
+
 AP 状态页同时显示热点 DHCP 是否运行。热点客户端使用 `192.168.31.0/24`；
 控制脚本会把该网段加入 Android 的 `eth0` 策略路由表，确保客户端访问本机服务
 时回复仍走 `wlan0`，而不是错误地发向有线路由器。实机已在路由器接入的自动
