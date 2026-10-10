@@ -33,6 +33,7 @@ data class DeviceSnapshot(
     val pppoeStatus: String = "—",
     val wlanIp: String = "—",
     val wifiMode: String = "—",
+    val wifiDhcpRunning: Boolean = false,
     val ssid: String = "—",
     val wifiBand: String = "2g",
     val channel: String = "—",
@@ -80,7 +81,8 @@ class ControlRepository(private val context: Context) {
             val install = "$mkdir; cp ${RootShell.quote(local.absolutePath)} $REMOTE/controller.sh; chmod 0755 $REMOTE/controller.sh"
             var result = RootShell.run(install)
             if (result.code == 0) {
-                result = RootShell.run(syncCommand() + "; $REMOTE/controller.sh once >/dev/null 2>&1; " +
+                result = RootShell.run(syncCommand() + "; $REMOTE/controller.sh ethernet-bootstrap >$REMOTE/logs/ethernet-apply.log 2>&1; " +
+                    "$REMOTE/controller.sh once >/dev/null 2>&1; " +
                     "if [ -s $REMOTE/controller.pid ]; then kill \$(cat $REMOTE/controller.pid) 2>/dev/null || true; fi; " +
                     "nohup $REMOTE/controller.sh daemon >$REMOTE/logs/controller.log 2>&1 & " +
                     "if [ -s $REMOTE/ethernet.pid ]; then kill \$(cat $REMOTE/ethernet.pid) 2>/dev/null || true; fi; " +
@@ -344,6 +346,7 @@ class ControlRepository(private val context: Context) {
             pppoeStatus = values["PPPOE_STATUS"] ?: "—",
             wlanIp = values["WLAN_IP"] ?: "—",
             wifiMode = values["WIFI_MODE"] ?: "—",
+            wifiDhcpRunning = values["WIFI_DHCP_RUNNING"] == "1",
             ssid = values["SSID"] ?: "—",
             wifiBand = values["BAND"] ?: "2g",
             channel = values["CHANNEL"] ?: "—",

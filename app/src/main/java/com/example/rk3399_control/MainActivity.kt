@@ -231,6 +231,7 @@ private fun NetworkPage(
             OutlinedButton(onClick = { onMode(false) }, enabled = !busy && s.wifiMode != "STA") { Text("切换到 STA 客户端") }
         }
         Text("当前：${s.wifiMode}  ·  ${s.ssid}  ·  ${bandLabel(s.wifiBand)} CH ${s.channel}  ·  ${s.wlanIp}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (s.wifiMode == "AP") Text("热点 DHCP：${if (s.wifiDhcpRunning) "运行中" else "未运行，手机可能无法获取 IP"}", color = if (s.wifiDhcpRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
         HorizontalDivider(Modifier.padding(vertical = 4.dp)); SectionTitle("热点配置")
         OutlinedTextField(ssid, { ssid = it.take(32) }, Modifier.fillMaxWidth(), label = { Text("SSID") }, singleLine = true)
         OutlinedTextField(password, { password = it.take(63) }, Modifier.fillMaxWidth(), label = { Text("新密码（8–63 位）") }, singleLine = true, visualTransformation = PasswordVisualTransformation())

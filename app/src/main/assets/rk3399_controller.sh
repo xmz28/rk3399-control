@@ -40,6 +40,12 @@ eth_stop_lan_dhcp() {
     PID_FILE="$ROOT/run/dnsmasq-eth0.pid"
     if [ -s "$PID_FILE" ]; then kill "$(cat "$PID_FILE")" 2>/dev/null || true; fi
     rm -f "$PID_FILE"
+    # dnsmasq can keep running without its pid file after /run is remounted.
+    # Never leave a LAN DHCP server on a cable connected to a router.
+    for PID in $(pidof dnsmasq 2>/dev/null); do
+        grep -q '/etc/dnsmasq-eth0.conf' "/proc/$PID/cmdline" 2>/dev/null &&
+            kill "$PID" 2>/dev/null || true
+    done
 }
 
 eth_start_lan_dhcp() {
@@ -88,11 +94,12 @@ stop_pppoe() {
 apply_ethernet() {
     MODE=$(cat "$BASE/config/eth_mode" 2>/dev/null)
     [ -n "$MODE" ] || MODE=auto
+    [ "$(getprop init.svc.ethernet_role)" != running ] || stop ethernet_role 2>/dev/null || true
     kill_script ethernet_role.sh
-    rm -f "$BASE/config/eth_probe_started"
+    rm -f "$BASE/config/eth_probe_started" "$BASE/config/eth_probe_attempted" "$BASE/config/eth_dhcp_last"
     case "$MODE" in
         auto)
-            stop_pppoe; setprop persist.net.ethernet.mode normal; eth_stop_lan_dhcp
+            stop_pppoe; setprop persist.net.ethernet.mode normal; eth_clear_auto_lan
             run_eth_cli dhcp || return $?
             eth_set_role probing
             ;;
@@ -103,9 +110,10 @@ apply_ethernet() {
             eth_set_role lan
             ;;
         wan_dhcp)
-            stop_pppoe; setprop persist.net.ethernet.mode normal; eth_stop_lan_dhcp
+            stop_pppoe; setprop persist.net.ethernet.mode normal; eth_clear_auto_lan
             run_eth_cli dhcp || return $?
-            eth_set_role wan-dhcp
+            /system/bin/timeout 12 /system/bin/dhcptool eth0 >/dev/null 2>&1 || true
+            if eth_has_upstream; then eth_set_role wan-dhcp; else eth_set_role connecting; fi
             ;;
         wan_static)
             stop_pppoe; setprop persist.net.ethernet.mode normal; eth_stop_lan_dhcp
@@ -129,16 +137,24 @@ apply_ethernet() {
     esac
 }
 
+bootstrap_ethernet() {
+    BOOT_ID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+    [ -n "$BOOT_ID" ] || { echo '无法读取启动标识'; return 3; }
+    [ "$(cat "$BASE/config/eth_boot_id" 2>/dev/null)" != "$BOOT_ID" ] || return 0
+    apply_ethernet || return $?
+    printf '%s' "$BOOT_ID" > "$BASE/config/eth_boot_id"
+}
+
 manage_ethernet() {
     MODE=$(cat "$BASE/config/eth_mode" 2>/dev/null); [ -n "$MODE" ] || MODE=auto
     CARRIER=$(cat /sys/class/net/eth0/carrier 2>/dev/null)
     case "$MODE" in
         auto)
             if [ "$CARRIER" != 1 ]; then
-                eth_clear_auto_lan; rm -f "$BASE/config/eth_probe_started"; eth_set_role down; return
+                eth_clear_auto_lan; rm -f "$BASE/config/eth_probe_started" "$BASE/config/eth_probe_attempted"; eth_set_role down; return
             fi
             if eth_has_upstream; then
-                eth_stop_lan_dhcp; rm -f "$BASE/config/eth_probe_started"; eth_set_role wan; return
+                eth_stop_lan_dhcp; rm -f "$BASE/config/eth_probe_started" "$BASE/config/eth_probe_attempted"; eth_set_role wan; return
             fi
             if ip -4 addr show dev eth0 2>/dev/null | grep -q ' 192.168.1.1/24'; then
                 [ -s "$ROOT/run/dnsmasq-eth0.pid" ] || eth_start_lan_dhcp
@@ -147,14 +163,46 @@ manage_ethernet() {
             NOW=$(date +%s); START=$(cat "$BASE/config/eth_probe_started" 2>/dev/null)
             if [ -z "$START" ]; then printf '%s' "$NOW" > "$BASE/config/eth_probe_started"; START=$NOW; fi
             WAIT=$(cat "$BASE/config/eth_auto_wait" 2>/dev/null); case "$WAIT" in ''|*[!0-9]*) WAIT=6;; esac
+            if [ ! -f "$BASE/config/eth_probe_attempted" ]; then
+                : > "$BASE/config/eth_probe_attempted"
+                /system/bin/timeout "$WAIT" /system/bin/dhcptool eth0 >/dev/null 2>&1 || true
+                if eth_has_upstream; then
+                    rm -f "$BASE/config/eth_probe_started" "$BASE/config/eth_probe_attempted"
+                    eth_set_role wan; return
+                fi
+            fi
+            NOW=$(date +%s)
             ELAPSED=$((NOW - START)); eth_set_role probing
-            [ "$ELAPSED" -lt "$WAIT" ] || { eth_configure_auto_lan; rm -f "$BASE/config/eth_probe_started"; }
+            if [ "$ELAPSED" -ge "$WAIT" ]; then
+                # A router at our prospective LAN address means DHCP is only
+                # delayed. Never start a competing DHCP server on that wire.
+                if /system/bin/arping -D -q -I eth0 -c 2 -w 2 192.168.1.1 >/dev/null 2>&1; then
+                    eth_configure_auto_lan
+                    rm -f "$BASE/config/eth_probe_started"
+                else
+                    printf '%s' "$NOW" > "$BASE/config/eth_probe_started"
+                    rm -f "$BASE/config/eth_probe_attempted"
+                    eth_set_role upstream-detected
+                fi
+            fi
             ;;
         lan)
             if [ "$CARRIER" = 1 ]; then [ -s "$ROOT/run/dnsmasq-eth0.pid" ] || eth_start_lan_dhcp; eth_set_role lan; else eth_set_role down; fi
             ;;
         wan_dhcp)
-            if [ "$CARRIER" != 1 ]; then eth_set_role down; elif eth_has_upstream; then eth_set_role wan-dhcp; else eth_set_role connecting; fi
+            if [ "$CARRIER" != 1 ]; then
+                rm -f "$BASE/config/eth_dhcp_last"; eth_set_role down
+            elif eth_has_upstream; then
+                eth_set_role wan-dhcp
+            else
+                NOW=$(date +%s); LAST=$(cat "$BASE/config/eth_dhcp_last" 2>/dev/null)
+                case "$LAST" in ''|*[!0-9]*) LAST=0;; esac
+                if [ $((NOW - LAST)) -ge 10 ]; then
+                    printf '%s' "$NOW" > "$BASE/config/eth_dhcp_last"
+                    /system/bin/timeout 12 /system/bin/dhcptool eth0 >/dev/null 2>&1 || true
+                fi
+                if eth_has_upstream; then eth_set_role wan-dhcp; else eth_set_role connecting; fi
+            fi
             ;;
         wan_static)
             [ "$CARRIER" = 1 ] && eth_set_role wan-static || eth_set_role down
@@ -252,6 +300,7 @@ wifi_sta() {
     PID_FILE="$ROOT/run/dnsmasq-wlan0.pid"
     [ ! -s "$PID_FILE" ] || kill "$(cat "$PID_FILE")" 2>/dev/null || true
     rm -f "$PID_FILE" /data/local/tmp/wifi_hotspot.pid
+    ip route del 192.168.31.0/24 dev wlan0 table eth0 2>/dev/null || true
     ip addr flush dev wlan0 scope global 2>/dev/null || true
     svc wifi enable 2>/dev/null || true
 }
@@ -266,6 +315,17 @@ wifi_ap() {
             nohup /system/bin/wifi_hotspot.sh >"$BASE/logs/hotspot.log" 2>&1 &
         fi
     fi
+    # Android routes unmarked replies through the eth0 policy table before
+    # main. Without this route AP clients get DHCP but cannot reach services.
+    if ip -4 addr show dev wlan0 2>/dev/null | grep -q ' 192.168.31.1/24' &&
+        ip rule show 2>/dev/null | grep -q 'lookup eth0'; then
+        ip route replace 192.168.31.0/24 dev wlan0 src 192.168.31.1 table eth0
+    fi
+}
+
+wifi_dhcp_running() {
+    PID_FILE="$ROOT/run/dnsmasq-wlan0.pid"
+    [ -s "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
 manage_wifi() {
@@ -284,6 +344,7 @@ manage_wifi() {
 stop_legacy_watchdogs() {
     kill_script rk3399-nas/scripts/nas_services.sh
     kill_script rk3399-nas/scripts/openspeedtest_guard.sh
+    [ "$(getprop init.svc.ethernet_role)" != running ] || stop ethernet_role 2>/dev/null || true
     kill_script ethernet_role.sh
 }
 
@@ -311,6 +372,7 @@ print_status() {
     echo "WLAN_IP=$(ip -4 addr show dev wlan0 2>/dev/null | grep ' inet ' | head -n 1 | sed 's/^[[:space:]]*//')"
     if pidof hostapd >/dev/null 2>&1; then WIFI_NOW=AP; else WIFI_NOW=STA; fi
     echo "WIFI_MODE=$WIFI_NOW"
+    if wifi_dhcp_running; then echo 'WIFI_DHCP_RUNNING=1'; else echo 'WIFI_DHCP_RUNNING=0'; fi
     SSID_NOW=$(iw dev wlan0 info 2>/dev/null | sed -n 's/^[[:space:]]*ssid //p' | head -n 1)
     if [ "$WIFI_NOW" = AP ]; then
         [ -n "$SSID_NOW" ] || SSID_NOW=$(sed -n 's/^ssid=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
@@ -534,6 +596,11 @@ ap_config() {
         echo "热点配置已保存，但 AP 未启动；请查看 Wi-Fi 日志"
         return 4
     }
+    AP_TRIES=0
+    until wifi_dhcp_running || [ "$AP_TRIES" -ge 15 ]; do
+        sleep 1; AP_TRIES=$((AP_TRIES + 1))
+    done
+    wifi_dhcp_running || { echo 'AP 已启动，但 DHCP 未启动，手机无法获取 IP'; return 4; }
     echo "热点已启动：SSID=$SSID BAND=$BAND CH=$CH"
 }
 
@@ -571,16 +638,19 @@ case "$1" in
             ap)
                 printf '1' > "$BASE/config/wifi_ap"; wifi_ap
                 WIFI_TRIES=0
-                until pidof hostapd >/dev/null 2>&1 || [ "$WIFI_TRIES" -ge 18 ]; do
+                until { pidof hostapd >/dev/null 2>&1 && wifi_dhcp_running; } || [ "$WIFI_TRIES" -ge 25 ]; do
                     sleep 1; WIFI_TRIES=$((WIFI_TRIES + 1))
                 done
-                pidof hostapd >/dev/null 2>&1 || { echo 'AP 未启动，请查看 Wi-Fi 日志'; exit 3; }
-                echo '热点已启动' ;;
+                pidof hostapd >/dev/null 2>&1 && wifi_dhcp_running || {
+                    echo 'AP 或 DHCP 未启动，请查看 Wi-Fi 日志'; exit 3;
+                }
+                echo '热点和 DHCP 已启动' ;;
             *) echo '模式必须为 ap 或 sta'; exit 2 ;;
         esac ;;
     ap-config) ap_config "$2" "$3" "$4" "$5" ;;
     apply-port) apply_port "$2" "$3" ;;
     ethernet-apply) apply_ethernet ;;
+    ethernet-bootstrap) bootstrap_ethernet ;;
     usb-status) usb_status ;;
     usb-set) usb_set "$2" "$3" ;;
     usb-preset) usb_preset_apply "$2" ;;

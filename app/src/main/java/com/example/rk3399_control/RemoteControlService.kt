@@ -110,7 +110,7 @@ class RemoteControlService : Service() {
                 .put("ethRole", snapshot.ethRole).put("ethIp", snapshot.ethIp).put("ethMode", snapshot.ethMode)
                 .put("ethAutoWait", snapshot.ethAutoWait).put("ethGateway", snapshot.ethGateway)
                 .put("pppoeStatus", snapshot.pppoeStatus).put("wlanIp", snapshot.wlanIp)
-                .put("wifiMode", snapshot.wifiMode).put("ssid", snapshot.ssid)
+                .put("wifiMode", snapshot.wifiMode).put("wifiDhcpRunning", snapshot.wifiDhcpRunning).put("ssid", snapshot.ssid)
                 .put("wifiBand", snapshot.wifiBand).put("channel", snapshot.channel)
                 .put("apSsid", snapshot.apSsid).put("apBand", snapshot.apBand).put("apChannel", snapshot.apChannel)
                 .put("usbCDeviceTree", snapshot.usbCDeviceTree).put("usbCMode", snapshot.usbCMode)
