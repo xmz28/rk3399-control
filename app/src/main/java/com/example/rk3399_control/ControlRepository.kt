@@ -81,7 +81,8 @@ class ControlRepository(private val context: Context) {
             }
             val mkdir = "mkdir -p $REMOTE/enabled $REMOTE/config $REMOTE/logs"
             val install = "$mkdir; cp ${RootShell.quote(local.absolutePath)} $REMOTE/controller.sh; chmod 0755 $REMOTE/controller.sh; " +
-                "cp ${RootShell.quote(storage.absolutePath)} /data/local/alpine-nas/opt/nas-storage.py; chmod 0600 /data/local/alpine-nas/opt/nas-storage.py"
+                "if [ ! -f /data/local/alpine-nas/etc/nas-package-version ]; then " +
+                "cp ${RootShell.quote(storage.absolutePath)} /data/local/alpine-nas/opt/nas-storage.py; chmod 0600 /data/local/alpine-nas/opt/nas-storage.py; fi"
             var result = RootShell.run(install)
             if (result.code == 0) {
                 result = RootShell.run(syncCommand() + "; $REMOTE/controller.sh ethernet-bootstrap >$REMOTE/logs/ethernet-apply.log 2>&1; " +

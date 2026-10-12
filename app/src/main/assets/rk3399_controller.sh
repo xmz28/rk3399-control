@@ -349,13 +349,17 @@ manage_wifi() {
 }
 
 stop_legacy_watchdogs() {
-    kill_script rk3399-nas/scripts/nas_services.sh
+    # The v0.3 deployment owns USB hotplug, Copyparty and the web portal.
+    # Its Magisk watcher must survive Control initialization and daemon ticks.
+    [ -f "$ROOT/etc/nas-package-version" ] || kill_script rk3399-nas/scripts/nas_services.sh
     kill_script rk3399-nas/scripts/openspeedtest_guard.sh
     [ "$(getprop init.svc.ethernet_role)" != running ] || stop ethernet_role 2>/dev/null || true
     kill_script ethernet_role.sh
 }
 
 run_once() {
+    mkdir -p "$BASE/config"
+    touch "$BASE/config/nas-v3-compatible"
     stop_legacy_watchdogs
     manage_nas
     manage_ftp
