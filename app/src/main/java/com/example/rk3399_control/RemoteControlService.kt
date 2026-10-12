@@ -56,7 +56,7 @@ class RemoteControlService : Service() {
 
     private fun serve(socket: Socket) {
         try {
-            socket.soTimeout = 65000
+            socket.soTimeout = 270000
             val input = socket.getInputStream()
             val requestLine = readLine(input) ?: return
             val parts = requestLine.split(' ')
@@ -77,6 +77,12 @@ class RemoteControlService : Service() {
             }
             if (!authorized(headers["authorization"])) {
                 respond(socket, 401, error("Password required"), true); return
+            }
+            if (parts[0] == "POST" && parts[1].substringBefore('?') == "/api/v1/storage") {
+                require(headers["x-storage-request"] == "1") { "Missing storage request header" }
+                headers["origin"]?.let { origin ->
+                    require(java.net.URI(origin).authority == headers["host"]) { "Cross-origin storage operation rejected" }
+                }
             }
             val size = headers["content-length"]?.toIntOrNull() ?: 0
             if (size !in 0..4096 || (parts[0] == "POST" && size == 0)) {
@@ -103,6 +109,7 @@ class RemoteControlService : Service() {
     }
 
     private fun route(method: String, path: String, body: JSONObject, fullPath: String): JSONObject {
+        if (path == "/api/v1/storage") return UsbStorageBackend.request(if (method == "POST") body else null)
         if (method == "GET" && path == "/api/v1/status") {
             val snapshot = awaitSnapshot()
             if (snapshot.error != null) return error(snapshot.error)

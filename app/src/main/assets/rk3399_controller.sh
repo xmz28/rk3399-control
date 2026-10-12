@@ -234,7 +234,9 @@ manage_nas() {
         killall smbd 2>/dev/null || true
     fi
 
-    if enabled http; then
+    if [ -f "$ROOT/etc/copyparty-base.conf" ]; then
+        : # The multi-protocol NAS watcher owns Copyparty and its PID.
+    elif enabled http; then
         port_open "$HTTP_PORT" || chroot "$ROOT" /usr/bin/python3 /opt/copyparty-sfx.py -c /etc/copyparty.conf >"$ROOT/var/log/copyparty.log" 2>&1 &
     else
         kill_script copyparty-sfx.py
@@ -269,6 +271,11 @@ set_ftp_boot_pref() {
 }
 
 manage_ftp() {
+    if [ -f "$ROOT/etc/copyparty-base.conf" ]; then
+        set_ftp_boot_pref false
+        am force-stop org.primftpd >/dev/null 2>&1
+        return
+    fi
     FTP_PORT=$(config_port ftp 12345)
     SFTP_PORT=$(config_port sftp 1234)
     if enabled ftp; then

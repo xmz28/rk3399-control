@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.rk3399_control.ui.theme.Rk3399_controlTheme
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,7 +40,7 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Page(val title: String, val glyph: String) {
-    OVERVIEW("概览", "●"), SERVICES("服务", "▣"), NETWORK("网络", "⌁"), LOGS("日志", "≡"), TERMINAL("终端", ">_")
+    OVERVIEW("概览", "●"), SERVICES("服务", "▣"), STORAGE("存储", "▤"), NETWORK("网络", "⌁"), LOGS("日志", "≡"), TERMINAL("终端", ">_")
 }
 
 @Composable
@@ -104,6 +106,10 @@ private fun ControlApp() {
                             onUsbPreset = { mode -> busy = true; repository.setUsbPreset(mode) { result("USB 启动预设 $mode 已保存，下次重启生效", it) } }
                         )
                         Page.LOGS -> LogsPage(repository)
+                        Page.STORAGE -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
+                            StorageManagement(load = { withContext(Dispatchers.IO) { UsbStorageBackend.request() } },
+                                perform = { body -> withContext(Dispatchers.IO) { UsbStorageBackend.request(body) } })
+                        }
                         Page.TERMINAL -> TerminalPage(repository)
                     }
                 }
