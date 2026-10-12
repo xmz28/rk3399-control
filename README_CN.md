@@ -39,7 +39,8 @@
 ## 使用前提
 
 - 设备为已 root 的 Android，且 `su -c` 对此 App 可用。
-- 已使用同目录 RK3399 NAS 部署包安装 NAS、热点和相关 APK。
+- 已在板子上部署 NAS、热点及相关服务；配套项目为
+  [RK3399 Android NAS](https://github.com/xmz28/rk3399-android-nas)。存储管理需要后续多盘脚本，旧版 NAS 源码快照不包含全部依赖。
 - 第一次打开 App 后允许 root；App 会安装控制脚本到
   `/data/local/rk3399-control/controller.sh`。
 
@@ -51,6 +52,8 @@ FTP 和 SFTP 由 Primitive FTPd 的同一进程管理，因此共用一个启停
 认证；手机端可记住密码，并可在验证后修改控制密码。只接受私网/本机来源，远程
 接口不开放 root 终端或文件读写。当前是明文 HTTP，简单密码仅适合可信家用局域网；
 不要将 8765 端口映射到公网。远程切换 AP/STA 或网口角色可能使当前连接断开。
+包含控制、Wi-Fi 和 PPPoE 密码的 `rk3399_control.xml` 已排除出云备份和设备迁移。
+正常运行和覆盖安装继续使用原配置；清除数据或换设备后需重新填写该文件中的密码与设置。
 NAS 密码与控制密码是两套独立凭据；改 NAS 密码时会同步修改 Samba 账号、
 Copyparty 账号和 Primitive FTPd 的 FTP/SFTP 账号。NAS 密码限定为 4–64 位
 字母、数字或 `._@#-`，避免供应商配置格式与脚本转义不一致。

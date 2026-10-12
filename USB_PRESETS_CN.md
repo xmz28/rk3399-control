@@ -10,8 +10,7 @@ USB3 Type-A OTG；B 是 Type-C OTG、USB3 Type-A Host。B 同时修改 `resource
 条目、DTB 节点及 KRNL/gzip/newc 结构；如果固件结构不同，直接拒绝生成。
 生成的二进制镜像不加入 Git。
 
-本次原始备份保存在
-`C:\Users\10145294\Documents\ChatGPT\rk3399开发\usb-preset-research`；
+原始固件备份保存在维护者本地的 `usb-preset-research/`，不随仓库发布；
 设备上的四个镜像在 `/data/local/rk3399-control/usb-presets/`。在本机固件上校验
 过的 SHA-1 是：
 
