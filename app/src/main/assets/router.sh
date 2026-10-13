@@ -10,6 +10,15 @@ mkdir -p "$CFG" "$RUN"
 chmod 0700 "$NET" "$CFG" "$RUN"
 value() { cat "$CFG/$1" 2>/dev/null; }
 enabled() { [ "$(value enabled)" = 1 ]; }
+wired_interfaces() {
+    for DEV in /sys/class/net/*; do
+        NAME=${DEV##*/}
+        echo "$NAME" | grep -qE '^(eth[0-9]+|usb[0-9]+|enx[0-9a-fA-F]+)$' || continue
+        [ "$(cat "$DEV/type" 2>/dev/null)" = 1 ] && echo "$NAME"
+    done
+}
+has_lan() { case " $(value lanMembers) " in *" $1 "*) return 0;; *) return 1;; esac; }
+all_wired() { { wired_interfaces; cat "$RUN/managed" 2>/dev/null; } | sort -u; }
 alive() { [ -s "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
 stop_pid() { if alive "$1"; then kill "$(cat "$1")" 2>/dev/null; fi; rm -f "$1"; }
 note() { printf '%s\n' "$*" > "$RUN/message"; echo "$(date '+%F %T') $*"; }
@@ -63,7 +72,7 @@ stop_old() {
     while iptables -D FORWARD -i wlan0 -o eth0 -j DROP 2>/dev/null; do :; done
 }
 cleanup() {
-    for IFACE in eth0 eth1; do
+    for IFACE in $(all_wired); do
         stop_pid "$RUN/$IFACE.pid"
         ip link set "$IFACE" nomaster 2>/dev/null || true
         ip addr flush dev "$IFACE" scope global 2>/dev/null || true
@@ -89,8 +98,8 @@ cleanup() {
     iptables -t raw -F RK_RAW 2>/dev/null; iptables -t raw -X RK_RAW 2>/dev/null
     [ ! -s "$RUN/original_forward" ] || cat "$RUN/original_forward" > /proc/sys/net/ipv4/ip_forward
     rm -f "$RUN/active" "$RUN/signature" "$RUN/wan" "$RUN/dns-signature" "$RUN/firewall-signature"
-    for IFACE in eth0 eth1; do rm -f "$RUN/$IFACE.lease" "$RUN/$IFACE.role" "$RUN/$IFACE.carrier" "$RUN/$IFACE.probe"; done
-    for IFACE in eth0 eth1 wlan0; do
+    for IFACE in $(all_wired); do rm -f "$RUN/$IFACE.lease" "$RUN/$IFACE.role" "$RUN/$IFACE.carrier" "$RUN/$IFACE.probe"; done
+    for IFACE in $(all_wired) wlan0; do
         for OPTION in arp_ignore arp_announce; do
             SAVED="$RUN/$IFACE.$OPTION"
             [ ! -s "$SAVED" ] || cat "$SAVED" > "/proc/sys/net/ipv4/conf/$IFACE/$OPTION" 2>/dev/null
@@ -122,7 +131,7 @@ init_network() {
     ip addr add "$LAN_IP/24" dev br-lan || return 1
     ip rule add pref 9000 lookup 180 || return 1
     printf '1' > "$RUN/active"
-    for IFACE in eth0 eth1; do ip addr flush dev "$IFACE" scope global 2>/dev/null; done
+    for IFACE in $(wired_interfaces); do ip addr flush dev "$IFACE" scope global 2>/dev/null; done
 }
 configure_dns() {
     DNS=${WAN_DNS:-${WAN_GW:-1.1.1.1}}
@@ -139,7 +148,7 @@ configure_dns() {
 }
 firewall() {
     FTP_RANGE=$(sed -n 's/^[[:space:]]*ftp-pr:[[:space:]]*\([0-9][0-9]*-[0-9][0-9]*\)[[:space:]]*$/\1/p' "$ROOT/etc/copyparty-base.conf" 2>/dev/null | head -n 1)
-    SIG="$WAN:$WAN_IP:$WAN_PREFIX:$FTP_RANGE:$(cat "$RUN/eth0.role"):$(cat "$RUN/eth1.role"):$(cat "$BASE/config/http_port"):$(cat "$BASE/config/ftp_port"):$(cat "$BASE/config/sftp_port"):$(cat "$BASE/config/iperf_port")"
+    SIG="portal80:$WAN:$WAN_IP:$WAN_PREFIX:$FTP_RANGE:$(wired_interfaces):$(value lanMembers):$(cat "$BASE/config/http_port"):$(cat "$BASE/config/ftp_port"):$(cat "$BASE/config/sftp_port"):$(cat "$BASE/config/iperf_port")"
     [ "$(cat "$RUN/firewall-signature" 2>/dev/null)" != "$SIG" ] || return
     iptables -N RK_INPUT 2>/dev/null; iptables -F RK_INPUT
     iptables -N RK_FORWARD 2>/dev/null; iptables -F RK_FORWARD
@@ -149,7 +158,7 @@ firewall() {
     ip6tables -C INPUT -j RK_INPUT 2>/dev/null || ip6tables -I INPUT 1 -j RK_INPUT
     ip6tables -C FORWARD -j RK_FORWARD 2>/dev/null || ip6tables -I FORWARD 1 -j RK_FORWARD
     ip6tables -A RK_INPUT -i br-lan -j ACCEPT
-    for IFACE in eth0 eth1 wlan0; do
+    for IFACE in $(wired_interfaces) wlan0 ap0; do
         ip6tables -A RK_INPUT -i "$IFACE" -j DROP
         ip6tables -A RK_FORWARD -i "$IFACE" -j DROP
         ip6tables -A RK_FORWARD -o "$IFACE" -j DROP
@@ -178,7 +187,7 @@ firewall() {
         case "$WAN_IP" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
             iptables -A RK_INPUT -i "$WAN" -s "$WAN_IP/$WAN_PREFIX" -p udp --dport 5353 -j ACCEPT
             iptables -A RK_INPUT -i "$WAN" -s "$WAN_IP/$WAN_PREFIX" -p icmp -j ACCEPT
-            for PORT in 8765 445 139 3000 $(cat "$BASE/config/http_port") $(cat "$BASE/config/ftp_port") $(cat "$BASE/config/sftp_port") $(cat "$BASE/config/iperf_port"); do
+            for PORT in 80 8765 445 139 3000 $(cat "$BASE/config/http_port") $(cat "$BASE/config/ftp_port") $(cat "$BASE/config/sftp_port") $(cat "$BASE/config/iperf_port"); do
                 case "$PORT" in ''|*[!0-9]*) continue;; esac
                 iptables -A RK_INPUT -i "$WAN" -s "$WAN_IP/$WAN_PREFIX" -p tcp --dport "$PORT" -j ACCEPT
             done
@@ -194,14 +203,11 @@ firewall() {
         esac
         iptables -A RK_INPUT -i "$WAN" -j DROP
     fi
-    for IFACE in eth0 eth1; do
+    for IFACE in $(wired_interfaces) wlan0 ap0; do
         [ "$IFACE" = "$WAN" ] || iptables -A RK_INPUT -i "$IFACE" -j DROP
         iptables -A RK_FORWARD -i "$IFACE" -j DROP
         iptables -A RK_FORWARD -o "$IFACE" -j DROP
     done
-    if [ "$WAN" != wlan0 ] && [ "$(cat "$BASE/config/wifi_ap")" != 1 ]; then
-        iptables -A RK_INPUT -i wlan0 -j DROP
-    fi
     iptables -A RK_FORWARD -i br-lan -j DROP
     iptables -A RK_FORWARD -o br-lan -j DROP
     printf '%s' "$SIG" > "$RUN/firewall-signature"
@@ -212,7 +218,10 @@ tick() {
     WAIT=$(value wait); case "$WAIT" in ''|*[!0-9]*) WAIT=20;; esac
     LAN_IP=$(value lanIp); [ -n "$LAN_IP" ] || LAN_IP=192.168.31.1
     LAN_NET=${LAN_IP%.*}
-    SIG="$UPLINK:$WAIT:$LAN_IP:$(value eth0Mode):$(value eth1Mode):$(value preset):$(value wifiMode)"
+    EXPLICIT=0; [ "$(value interfaceMode)" != explicit ] || EXPLICIT=1
+    AP_LAN=1; [ "$EXPLICIT" != 1 ] || { has_lan ap || AP_LAN=0; }
+    WIRED=$(wired_interfaces)
+    SIG="$UPLINK:$WAIT:$LAN_IP:$(value eth0Mode):$(value eth1Mode):$(value preset):$(value wifiMode):$EXPLICIT:$(value lanMembers):$WIRED"
     if [ "$(cat "$RUN/signature" 2>/dev/null)" != "$SIG" ]; then
         if [ ! -f "$RUN/active" ] || ! ip -4 -o addr show dev br-lan | grep -q " $LAN_IP/24 "; then
             cleanup
@@ -220,7 +229,7 @@ tick() {
         else
             # Changing uplink must not destroy a healthy AP/STA radio or the
             # LAN bridge: phone clients keep their leases and control session.
-            for IFACE in eth0 eth1; do
+            for IFACE in $(all_wired); do
                 stop_pid "$RUN/$IFACE.pid"
                 ip link set "$IFACE" nomaster 2>/dev/null
                 ip addr flush dev "$IFACE" scope global
@@ -230,6 +239,7 @@ tick() {
             rm -f "$RUN/firewall-signature" "$RUN/wan"
         fi
         printf '%s' "$SIG" > "$RUN/signature"
+        printf '%s\n' "$WIRED" > "$RUN/managed"
     fi
     NOW=$(date +%s)
     WIFI_POLICY=$(value wifiMode)
@@ -244,7 +254,7 @@ tick() {
         printf '%s' "$WIFI_POLICY_SIG" > "$RUN/wifi-policy"
     fi
     # Avoid Linux weak-host ARP replies from an isolated port for another NIC.
-    for IFACE in eth0 eth1 wlan0; do
+    for IFACE in $WIRED wlan0; do
         [ -d "/proc/sys/net/ipv4/conf/$IFACE" ] || continue
         for OPTION in arp_ignore arp_announce; do
             [ -f "$RUN/$IFACE.$OPTION" ] || cat "/proc/sys/net/ipv4/conf/$IFACE/$OPTION" > "$RUN/$IFACE.$OPTION"
@@ -252,9 +262,15 @@ tick() {
         printf 1 > "/proc/sys/net/ipv4/conf/$IFACE/arp_ignore"
         printf 2 > "/proc/sys/net/ipv4/conf/$IFACE/arp_announce"
     done
-    for IFACE in eth0 eth1; do
+    for IFACE in $WIRED; do
         [ -d "/sys/class/net/$IFACE" ] || { printf 'absent' > "$RUN/$IFACE.role"; continue; }
         ip link set "$IFACE" up
+        if { [ "$EXPLICIT" = 1 ] && [ "$UPLINK" != "$IFACE" ] && ! has_lan "$IFACE"; } ||
+            { [ "$EXPLICIT" != 1 ] && [ "$IFACE" != eth0 ] && [ "$IFACE" != eth1 ]; }; then
+            stop_pid "$RUN/$IFACE.pid"; rm -f "$RUN/$IFACE.lease"
+            ip link set "$IFACE" nomaster 2>/dev/null; ip addr flush dev "$IFACE" scope global
+            printf unused > "$RUN/$IFACE.role"; continue
+        fi
         CARRIER=$(cat "/sys/class/net/$IFACE/carrier" 2>/dev/null)
         OLD=$(cat "$RUN/$IFACE.carrier" 2>/dev/null)
         printf '%s' "$CARRIER" > "$RUN/$IFACE.carrier"
@@ -263,7 +279,7 @@ tick() {
             ip link set "$IFACE" nomaster 2>/dev/null; ip addr flush dev "$IFACE" scope global
             printf down > "$RUN/$IFACE.role"; continue
         fi
-        if [ "$UPLINK" = none ] || { [ "$UPLINK" != "$IFACE" ] && [ "$(value ${IFACE}Mode)" = lan ]; }; then
+        if { [ "$EXPLICIT" = 1 ] && has_lan "$IFACE"; } || [ "$UPLINK" = none ] || { [ "$UPLINK" != "$IFACE" ] && [ "$(value ${IFACE}Mode)" = lan ]; }; then
             printf lan > "$RUN/$IFACE.role"; continue
         fi
         if [ "$OLD" != 1 ] || [ ! -s "$RUN/$IFACE.probe" ]; then
@@ -306,7 +322,7 @@ tick() {
         fi
     fi
     [ -n "$WAN" ] || { WAN_IP=; WAN_GW=; WAN_DNS=; WAN_PREFIX=; }
-    for IFACE in eth0 eth1; do
+    for IFACE in $WIRED; do
         ROLE=$(cat "$RUN/$IFACE.role" 2>/dev/null)
         if [ "$IFACE" = "$WAN" ]; then
             ip link set "$IFACE" nomaster 2>/dev/null
@@ -322,9 +338,9 @@ tick() {
         fi
     done
     if [ -n "$WAN" ] && [ "$WAN" = wlan0 ]; then printf wwan > "$RUN/wlan0.role"
-    elif [ "$(cat "$BASE/config/wifi_ap")" = 1 ]; then printf lan > "$RUN/wlan0.role"
+    elif [ "$(cat "$BASE/config/wifi_ap")" = 1 ] && [ "$AP_LAN" = 1 ]; then printf lan > "$RUN/wlan0.role"
     else printf standby > "$RUN/wlan0.role"; fi
-    printf lan > "$RUN/ap0.role"
+    if [ "$AP_LAN" = 1 ]; then printf lan > "$RUN/ap0.role"; else printf unused > "$RUN/ap0.role"; fi
     WIFI_MODE=$(cat "$BASE/config/wifi_ap")
     if [ -f "$BASE/config/wifi_transition" ]; then
         :
@@ -333,7 +349,10 @@ tick() {
         if ! pidof hostapd >/dev/null && ! alive "$RUN/ap.pid"; then
             nohup "$BASE/router-ap.sh" > "$BASE/logs/router-ap.log" 2>&1 & echo $! > "$RUN/ap.pid"
         fi
-        if iw dev wlan0 info | grep -q 'type AP'; then ip addr flush dev wlan0 scope global; ip link set wlan0 master br-lan; fi
+        if iw dev wlan0 info | grep -q 'type AP'; then
+            ip addr flush dev wlan0 scope global
+            if [ "$AP_LAN" = 1 ]; then ip link set wlan0 master br-lan; else ip link set wlan0 nomaster 2>/dev/null; fi
+        fi
     elif [ "$WIFI_MODE" = 2 ]; then
         if iw dev wlan0 info | grep -q 'type AP'; then
             nohup "$BASE/router.sh" restore-concurrent > "$BASE/logs/router-wifi.log" 2>&1 &
@@ -350,7 +369,9 @@ tick() {
             fi
         fi
         ip link set wlan0 nomaster 2>/dev/null
-        [ ! -d /sys/class/net/ap0 ] || ip link set ap0 master br-lan
+        if [ -d /sys/class/net/ap0 ]; then
+            if [ "$AP_LAN" = 1 ]; then ip link set ap0 master br-lan; else ip link set ap0 nomaster 2>/dev/null; fi
+        fi
     else
         ip link set wlan0 nomaster 2>/dev/null
     fi
@@ -383,31 +404,62 @@ tick() {
     [ "$CONFLICT" != 1 ] || TEXT='WAN 与 LAN 网段重叠，请修改 LAN 地址后再应用'
     [ "$(cat "$RUN/message" 2>/dev/null)" = "$TEXT" ] || note "$TEXT"
 }
+needs_confirmation() {
+    # Compare live AP and bridge state, not merely the preset's name.
+    STAGED="$NET/staged/$1"
+    POLICY=$(cat "$STAGED/rollbackPolicy" 2>/dev/null)
+    case "$POLICY" in on) return 0;; off) return 1;; esac
+    [ "$(value enabled)" = 1 ] && [ "$(cat "$STAGED/enabled")" = 1 ] || return 0
+    [ "$(value lanIp)" = "$(cat "$STAGED/lanIp")" ] || return 0
+    [ ! -f "$BASE/config/wifi_transition" ] || return 0
+    CURRENT_WIFI=$(cat "$BASE/config/wifi_ap" 2>/dev/null)
+    case "$CURRENT_WIFI" in 1) AP_IFACE=wlan0;; 2) AP_IFACE=ap0;; *) return 0;; esac
+    [ "$(basename "$(readlink -f /sys/class/net/$AP_IFACE/master 2>/dev/null)")" = br-lan ] || return 0
+    [ "$(cat /sys/class/net/$AP_IFACE/carrier 2>/dev/null)" = 1 ] || return 0
+    case "$(cat "$STAGED/wifiMode")" in
+        keep) ;;
+        ap) [ "$CURRENT_WIFI" = 1 ] || return 0;;
+        apsta) [ "$CURRENT_WIFI" = 2 ] || return 0;;
+        *) return 0;;
+    esac
+    if [ "$(cat "$STAGED/interfaceMode")" = explicit ]; then
+        case " $(cat "$STAGED/lanMembers") " in *' ap '*) ;; *) return 0;; esac
+    fi
+    return 1
+}
 stage() {
     [ ! -s "$NET/pending" ] || { echo '请先确认或回滚上一项配置'; return 2; }
     mkdir "$NET/apply-lock" 2>/dev/null || { echo '另一项配置正在写入'; return 2; }
     echo $$ > "$NET/apply-lock/pid"
     trap 'rm -f "$NET/apply-lock/pid"; rmdir "$NET/apply-lock" 2>/dev/null' EXIT
-    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode; do
+    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode interfaceMode lanMembers; do
         [ -f "$NET/staged/$2/$NAME" ] || { echo '暂存配置不完整'; return 2; }
     done
+    CONFIRM=0; needs_confirmation "$2" && CONFIRM=1
     mkdir -p "$NET/previous"
-    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode wifiGeneration; do rm -f "$NET/previous/$NAME"; done
+    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode wifiGeneration interfaceMode lanMembers rollbackPolicy; do rm -f "$NET/previous/$NAME"; done
     cp "$CFG/"* "$NET/previous/" 2>/dev/null || true
     cat "$BASE/config/wifi_ap" > "$NET/previous/wifi_ap"
     printf '%s' "$2" > "$NET/token"
     printf '%s' "$(( $(date +%s) + 120 ))" > "$NET/pending"
-    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode; do
+    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode interfaceMode lanMembers; do
         cp "$NET/staged/$2/$NAME" "$CFG/$NAME" || { rollback; return 3; }
         rm -f "$NET/staged/$2/$NAME"
     done
     printf '%s' "$2" > "$CFG/wifiGeneration"
+    cat "$NET/staged/$2/rollbackPolicy" > "$CFG/rollbackPolicy" 2>/dev/null || printf auto > "$CFG/rollbackPolicy"
+    rm -f "$NET/staged/$2/rollbackPolicy"
     rmdir "$NET/staged/$2"
-    echo '配置已提交，120 秒内重新连接并确认，否则自动回滚'
+    if [ "$CONFIRM" = 1 ]; then
+        echo '配置已提交，120 秒内重新连接并确认，否则自动回滚'
+    else
+        rm -f "$NET/pending" "$NET/token"
+        echo '配置已保留，无需确认（AP/LAN 未改变，或已关闭安全回滚）'
+    fi
 }
 rollback() {
     BEFORE_WIFI=$(cat "$BASE/config/wifi_ap" 2>/dev/null)
-    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode wifiGeneration; do
+    for NAME in enabled uplink wait lanIp eth0Mode eth1Mode preset wifiMode wifiGeneration interfaceMode lanMembers rollbackPolicy; do
         if [ -f "$NET/previous/$NAME" ]; then cp "$NET/previous/$NAME" "$CFG/$NAME"; else rm -f "$CFG/$NAME"; fi
     done
     cp "$NET/previous/wifi_ap" "$BASE/config/wifi_ap" 2>/dev/null || true
@@ -429,6 +481,20 @@ status() {
     echo "eth1Mode=$(value eth1Mode)"
     echo "preset=$(value preset)"
     echo "wifiPolicy=$(value wifiMode)"
+    echo "interfaceMode=$(value interfaceMode)"
+    echo "lanMembers=$(value lanMembers)"
+    echo "rollbackPolicy=$(value rollbackPolicy)"
+    echo "interfaces=$(wired_interfaces | tr '\n' ' ')wlan0 ap"
+    echo "ap.label=无线 AP（wlan0/ap0）"
+    for DEVICE in $(wired_interfaces); do
+        DRIVER=$(basename "$(readlink -f /sys/class/net/$DEVICE/device/driver 2>/dev/null)")
+        LABEL="USB 网卡"
+        [ "$DEVICE" != eth0 ] || LABEL="板载网口"
+        case "$DRIVER" in cdc_ether|rndis_host|cdc_ncm|cdc_mbim) LABEL="USB 蜂窝/共享网卡";; r8152) LABEL="USB 千兆网卡";; esac
+        echo "$DEVICE.label=$LABEL · $DEVICE"
+        echo "$DEVICE.driver=$DRIVER"
+    done
+    echo "wlan0.label=WiFi STA · wlan0"
     echo "activeWan=$(cat "$RUN/wan" 2>/dev/null)"
     echo "message=$(cat "$RUN/message" 2>/dev/null)"
     echo "pendingUntil=$(cat "$NET/pending" 2>/dev/null)"
@@ -438,7 +504,7 @@ status() {
     echo "wifiOperation=$(cat "$BASE/config/wifi_ap" 2>/dev/null)"
     echo "ap0.channel=$(wl -i ap0 status 2>/dev/null | sed -n 's/.*Primary channel: //p')"
     if hostapd_cli -p /data/misc/wifi/hostapd-ap0 -i ap0 status 2>/dev/null | grep -q '^state=ENABLED'; then echo concurrentAp=1; else echo concurrentAp=0; fi
-    for IFACE in eth0 eth1 wlan0 ap0 br-lan; do
+    for IFACE in $(wired_interfaces) wlan0 ap0 br-lan; do
         echo "$IFACE.role=$(cat "$RUN/$IFACE.role" 2>/dev/null)"
         echo "$IFACE.ip=$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4}')"
         echo "$IFACE.mac=$(cat /sys/class/net/$IFACE/address 2>/dev/null)"

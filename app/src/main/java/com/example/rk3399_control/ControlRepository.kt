@@ -164,6 +164,24 @@ class ControlRepository(private val context: Context) {
         configureRouter(enabled, choice.uplink, wait, lanIp, choice.eth0, choice.eth1, callback, preset)
     }
 
+    fun configureNetworkInterfaces(enabled: Boolean, wan: String, members: List<String>, wait: Int,
+                                   lanIp: String, callback: (ShellResult) -> Unit, rollbackPolicy: String = "auto") {
+        val wired = Regex("(?:eth[0-9]+|usb[0-9]+|enx[0-9a-fA-F]+)")
+        if ((wan !in setOf("none", "wlan0") && !wired.matches(wan)) ||
+            members.any { it != "ap" && !wired.matches(it) } || wan in members ||
+            rollbackPolicy !in setOf("auto", "on", "off") || members.size > 32 || wait !in 3..120 || !isIpv4(lanIp) || !lanIp.startsWith("192.168.") ||
+            lanIp.substringAfterLast('.').toIntOrNull() !in 1..99) {
+            callback(ShellResult(2, "WAN 只能选一个，不能同时加入 LAN；接口或 LAN 地址无效")); return
+        }
+        val values = mapOf("enabled" to if (enabled) "1" else "0", "uplink" to wan, "wait" to "$wait",
+            "lanIp" to lanIp, "eth0Mode" to "auto", "eth1Mode" to "auto", "preset" to "custom",
+            "wifiMode" to "keep", "interfaceMode" to "explicit", "lanMembers" to members.distinct().joinToString(" "), "rollbackPolicy" to rollbackPolicy)
+        val preflight = if (!enabled || wan == "none") "" else
+            "[ -d /sys/class/net/${RootShell.quote(wan)} ] || { echo 'WAN 接口已拔出或不存在'; exit 2; }; " +
+            if (wan == "wlan0") "wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED$' || { echo 'WiFi WAN 需要先连接 STA 上游'; exit 2; }; " else ""
+        stageNetwork(values, preflight, callback)
+    }
+
     fun configureRouter(enabled: Boolean, uplink: String, wait: Int, lanIp: String,
                         eth0Mode: String, eth1Mode: String, callback: (ShellResult) -> Unit, preset: String = "custom") {
         if (uplink !in setOf("auto", "eth0", "eth1", "wlan0", "none") || wait !in 3..120 ||
@@ -171,15 +189,20 @@ class ControlRepository(private val context: Context) {
             !lanIp.startsWith("192.168.") || eth0Mode !in setOf("auto", "lan") || eth1Mode !in setOf("auto", "lan")) {
             callback(ShellResult(2, "路由参数无效：LAN 使用 192.168.x.1–99/24，检测时间 3–120 秒")); return
         }
-        val staged = "$REMOTE/network/staged"
-        val token = java.util.UUID.randomUUID().toString()
         if ((uplink == "eth0" && eth0Mode == "lan") || (uplink == "eth1" && eth1Mode == "lan")) {
             callback(ShellResult(2, "指定 WAN 的网口不能同时选择仅 LAN")); return
         }
         val wifi = routerPresets.firstOrNull { it.id == preset }?.wifi ?: "keep"
         val values = mapOf("enabled" to (if (enabled) "1" else "0"), "uplink" to uplink, "wait" to "$wait",
-            "lanIp" to lanIp, "eth0Mode" to eth0Mode, "eth1Mode" to eth1Mode, "preset" to preset, "wifiMode" to wifi)
+            "lanIp" to lanIp, "eth0Mode" to eth0Mode, "eth1Mode" to eth1Mode, "preset" to preset, "wifiMode" to wifi,
+            "interfaceMode" to "legacy", "lanMembers" to "", "rollbackPolicy" to "auto")
         val preflight = if (wifi == "apsta" && enabled) "wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED$' || { echo '请先在 WiFi 页面连接上游，再应用无线上网场景'; exit 2; }; " else ""
+        stageNetwork(values, preflight, callback)
+    }
+
+    private fun stageNetwork(values: Map<String, String>, preflight: String, callback: (ShellResult) -> Unit) {
+        val staged = "$REMOTE/network/staged"
+        val token = java.util.UUID.randomUUID().toString()
         val command = preflight + "mkdir -p $staged/$token; " + values.map { (key, value) ->
             "printf %s ${RootShell.quote(value)} > $staged/$token/$key"
         }.joinToString("; ") + "; $REMOTE/router.sh stage ${RootShell.quote(token)}"

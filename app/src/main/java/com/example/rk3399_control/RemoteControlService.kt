@@ -161,7 +161,12 @@ class RemoteControlService : Service() {
         if (method != "POST") throw IllegalArgumentException("Unknown endpoint")
         return when (path) {
             "/api/v1/network" -> result(await {
-                repository.configureRouter(body.getBoolean("enabled"), body.getString("uplink"),
+                if (body.has("lanMembers")) {
+                    val array = body.getJSONArray("lanMembers")
+                    repository.configureNetworkInterfaces(body.getBoolean("enabled"), body.getString("uplink"),
+                        (0 until array.length()).map { i -> array.getString(i) }, body.optInt("wait", 20),
+                        body.optString("lanIp", "192.168.31.1"), it, body.optString("rollbackPolicy", "auto"))
+                } else repository.configureRouter(body.getBoolean("enabled"), body.getString("uplink"),
                     body.optInt("wait", 20), body.optString("lanIp", "192.168.31.1"),
                     body.optString("eth0Mode", "auto"), body.optString("eth1Mode", "auto"), it)
             })

@@ -7,7 +7,10 @@ sleep 4
 for SERVICE in p2p_supplicant p2p_supplicant1 wpa_supplicant wpa_supplicant1; do stop "$SERVICE" 2>/dev/null || true; done
 mkdir -p /data/misc/wifi/hostapd
 sed '/^bridge=/d' "$CONF" > "$BASE/network/run/hostapd.conf"
-printf '\nbridge=br-lan\n' >> "$BASE/network/run/hostapd.conf"
+if [ "$(cat "$BASE/network/config/interfaceMode" 2>/dev/null)" != explicit ] ||
+    grep -qE '(^| )ap( |$)' "$BASE/network/config/lanMembers"; then
+    printf '\nbridge=br-lan\n' >> "$BASE/network/run/hostapd.conf"
+fi
 cp "$BASE/network/run/hostapd.conf" /data/misc/wifi/hostapd.conf
 chown system:wifi /data/misc/wifi/hostapd.conf /data/misc/wifi/hostapd
 chmod 0660 /data/misc/wifi/hostapd.conf

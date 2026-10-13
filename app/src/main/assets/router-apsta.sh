@@ -22,7 +22,11 @@ if [ "$FREQ" -ge 5000 ]; then CH=$(( (FREQ - 5000) / 5 )); HW=a
 else CH=$(( (FREQ - 2407) / 5 )); HW=g; fi
 sed "s/^interface=.*/interface=ap0/; s/^channel=.*/channel=$CH/; s/^hw_mode=.*/hw_mode=$HW/; /^ctrl_interface=/d; /^bridge=/d" \
     /data/local/rk3399-hotspot/hostapd.conf > "$CONF"
-printf '\nctrl_interface=%s\nbridge=br-lan\n' "$CTRL" >> "$CONF"
+printf '\nctrl_interface=%s\n' "$CTRL" >> "$CONF"
+if [ "$(cat "$BASE/network/config/interfaceMode" 2>/dev/null)" != explicit ] ||
+    grep -qE '(^| )ap( |$)' "$BASE/network/config/lanMembers"; then
+    printf '\nbridge=br-lan\n' >> "$CONF"
+fi
 chown system:wifi "$CONF"
 chmod 0660 "$CONF"
 restorecon "$CTRL" "$CONF" 2>/dev/null || true

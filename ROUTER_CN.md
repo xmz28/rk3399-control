@@ -18,26 +18,35 @@
 
 固定 WAN 即使没有 DHCP 也不会降级成 LAN；全自动最多选中一个 WAN，板载优先、USB 备用，第二个有 DHCP 上游的端口隔离。全自动场景不使用 WiFi 作为上行。
 
-无线上网需要先在 WiFi 页面切 STA 并连接上游，否则应用会拒绝且不改变配置。选择此场景之前，两个有线端口应仅接下游设备，不能仍接已有路由器 LAN。场景应用会调整无线模式，可能断开手机，请重新连接后在 120 秒内确认。WiFi 页面主动改变模式不会被预设反复覆盖；再次应用预设才恢复其无线模式。
+无线上网需要先在 WiFi 页面切 STA 并连接上游，否则应用会拒绝且不改变配置。选择此场景之前，两个有线端口应仅接下游设备，不能仍接已有路由器 LAN。场景应用若调整无线模式，可能断开手机，需重新连接后在 120 秒内确认。WiFi 页面主动改变模式不会被预设反复覆盖；再次应用预设才恢复其无线模式。
 
-## 高级逐接口配置
+## 高级接口选择
 
 | 上行选择 | 行为 |
 | --- | --- |
-| 自动 | 按板载 eth0、USB eth1、WiFi STA wlan0 优先级选择一个可用上行 |
-| 板载 WAN / USB WAN | 指定网口 DHCP 上行，暂时无租约时等待连接 |
+| 无上行 | 不选择 WAN，仅在所选 LAN 成员间通信 |
+| 检测到的有线接口 | 单选 DHCP WAN，包括板载、USB 千兆及 USB 蜂窝/共享网卡，暂时无租约时等待连接 |
 | WiFi WWAN | 已连接 WiFi 的 STA 作为上行 |
-| 全 LAN | 两个有线端口都加入 LAN，无外部上行 |
+
+选择「高级自定义」后只有两个角色选择器：WAN 单选下拉（可选无上行），LAN（br-lan）多选下拉。有线接口和无线 AP 可加入 LAN，也可全部不选；WAN 自动从 LAN 选项中排除，服务端再次校验角色不能重叠。未选中的接口不参与本机路由或 DHCP，也不加入网桥。空 LAN 或取消 AP 会弹出断连提醒，仍保留 120 秒确认/回滚。
+
+动态识别 sysfs 中的以太网类型接口，名称支持 ethN、usbN、enxMAC；当前板子显示 eth0、eth1、eth2。无线 AP 是逻辑成员 ap，实际映射独立热点 wlan0 或并发热点 ap0；wlan0 STA 只可选作 WAN，不直接加入 LAN。无线模式仍在 WiFi 页配置。已选 LAN 网卡拔出后仍保留配置，可在列表中取消选择。
 
 自动识别依据 DHCP 租约：有 DHCP 上游的端口作为 WAN 候选；未收到响应的端口在设定检测时间后加入 LAN。时间可设置 3–120 秒，默认 20 秒。明确下游的端口可指定「仅 LAN」。第二个收到上游 DHCP 的端口被隔离，不能把它直接桥接进本机 DHCP LAN。静态上游、纯 PPPoE 自动识别不在本版范围；PPPoE 本身不保证存在 DHCP。
 
-LAN 默认 192.168.31.1/24，可设置 192.168.x.1–99/24，DHCP 池 .100–.200。LAN 和 WAN 不能重叠。AP 加入 LAN；STA 作为 WWAN 或备用上行。LAN→WAN 开启 IPv4 NAT，WAN 不主动转发到下游客户端。
+LAN 默认 192.168.31.1/24，可设置 192.168.x.1–99/24，DHCP 池 .100–.200。LAN 和 WAN 子网不能重叠。预设将 AP 加入 LAN；高级模式只桥接所选 LAN 成员。LAN→WAN 开启 IPv4 NAT，WAN 不主动转发到下游客户端。
 
-每次应用后必须在 120 秒内重新连接并「确认保留」；超时恢复上一份配置，也可立即回滚。未确认就重启会恢复上一份配置。切换上行且 LAN 地址不变时保留热点和 LAN 桥，避免主动断开手机。ARP 按网卡自身地址回应，切换上行发送更新通知，避免隔离端口代答 WiFi 地址。
+预设应用按实际断连风险判断：统一管理仍开启、LAN 地址不变、当前 AP 已桥接且链路正常、目标无线模式不变并保留 AP 时直接保留，不强制确认。有线 WAN 或成员变化本身不要求确认。LAN 地址变化、无线模式变化、移除 AP、关闭管理或当前 AP 不可用时，仍需在 120 秒内重新连接并「确认保留」；超时恢复上一份配置，也可立即回滚。未确认就重启会恢复上一份配置。
+
+高级自定义提供「安全回滚」开关，默认开启（强制确认），关闭时会额外提示并直接保留配置，不会超时恢复。API 的 rollbackPolicy 支持 auto/on/off，缺省 auto；预设始终使用 auto。自动判断只保证热点控制入口未被主动改变，不保证原有线控制会话不中断。切换上行且 LAN 地址不变时保留热点和 LAN 桥；ARP 按网卡自身地址回应，避免隔离端口代答 WiFi 地址。
 
 「仅 LAN」或「全 LAN」会对接入设备发放 DHCP：不要在此模式下把对应端口接到已有路由器 LAN，否则可能出现两个 DHCP 服务器。
 
 ## 上下游访问 NAS 与管理
+
+网页入口 nginx 监听 80；直连私网上游也放行 TCP 80，修复 WAN 侧能访问 :3923 却无法打开 http://a.local/ 的问题。此规则沿用私有 WAN 子网来源限制，不开放公网入站。
+
+本轮实测：Windows 在直连私网上游访问 http://a.local/ 和 http://192.168.1.152/ 均返回 nginx 200；同 LAN/AP 的板载预设直接保留、无 pending；高级 rollbackPolicy=on 产生待确认状态并可立即回滚，off 无 pending；预设将 LAN 改到 192.168.32.1 仍触发确认，等待超时后恢复 192.168.31.1、板载 WAN 且清除 pending。两端新 APK 编译、覆盖安装成功。无线模式变化、关闭管理及移除 AP 的回滚分支尚未全部实机覆盖。
 
 下游通过 LAN 地址访问 RK3399；上游通过选中 WAN 的 DHCP 地址访问。仅直接连接的私有上游子网放行控制 API 8765、SMB 445/139、HTTP、FTP/SFTP、测速服务端口；NAS 与后台控制仍需要原账号密码。FTP 被动端口从现有 copyparty 的 ftp-pr 配置读取（当前 5678），限制范围最多 101 个端口。
 
@@ -69,7 +78,16 @@ LAN 默认 192.168.31.1/24，可设置 192.168.x.1–99/24，DHCP 池 .100–.20
 
 实测手机热点侧 a.local 解析 192.168.31.1、ping 成功；上游 Windows 使用 IPv4 的 a.local 解析 192.168.1.133、ping 成功。手机同时发现 RK3399 NAS 的 iperf3 服务。IPv6 未纳入此实现，Windows 默认 ping 可能命中旧 IPv6/其他发现协议地址，不代表 IPv6 已支持。
 
-RNDIS：当前内核 CONFIG_USB_NET_RNDIS_HOST=y、CONFIG_USB_F_RNDIS=y、CONFIG_USB_CONFIGFS_RNDIS=y，具备 Host 接收 USB 共享网络及 Device/Gadget 提供 RNDIS 的底层支持。当前实测 USB 千兆网卡是 r8152/eth1，不是 RNDIS。手机 USB 共享常产生 usb0 等不同名称，本路由管理器尚未接管，也没有增加 RNDIS Gadget 开关；不能把内核支持当作端到端实测通过。
+RNDIS：当前内核 CONFIG_USB_NET_RNDIS_HOST=y、CONFIG_USB_F_RNDIS=y、CONFIG_USB_CONFIGFS_RNDIS=y，具备 Host 接收 USB 共享网络及 Device/Gadget 提供 RNDIS 的底层支持。动态接口管理现支持 usbN 等接口名称，但未实测真正 RNDIS 设备，也没有增加 RNDIS Gadget 开关；不能把内核支持当作端到端实测通过。
+
+### 高级模式及 USB 4G 网卡实测
+
+- 新版两端 APK 已构建安装；原五个预设不变，新插 eth2 不自动参与原双网口预设。
+- 当前 USB 4G 网卡 VID:PID 为 19d2:0536，实际工作在 CDC Ethernet 模式，由 cdc_ether 驱动生成 eth2，不是 RNDIS 模式。
+- 临时选择 eth2 WAN、ap LAN：eth2 获取 192.168.1.100/24，网关 192.168.1.1；eth0/eth1 未选，不加入 LAN、无 IPv4 地址，策略路由及 NAT 出口均为 eth2。
+- 手机连接 RK3399 热点，获得 192.168.31.116；访问 4G 网关 ping 2/2 成功、TTL=63，NAT 计数增长；a.local 解析 192.168.31.1、ping 2/2 成功。
+- 板端可读取 4G 网卡管理网页。但网卡 DNS 对 example.com 返回 REFUSED，板端及手机公网 ping 无响应；未证明 4G 互联网可用，也未确认 SIM/APN/蜂窝注册状态。
+- API 拒绝同一接口同时作 WAN 和 LAN；不确认配置后自动恢复原板载 WAN 预设。空 LAN、网卡热拔插及真正 RNDIS 尚未完成端到端测试。
 
 ## 实现入口
 
@@ -77,9 +95,9 @@ RNDIS：当前内核 CONFIG_USB_NET_RNDIS_HOST=y、CONFIG_USB_F_RNDIS=y、CONFIG
 - router-lease.sh：DHCP 事件只保存租约，避免未选中的上游私自改 IP/路由。
 - router-ap.sh / router-apsta.sh：独立热点及并发热点初始化。
 - GET /api/v1/network：接口、角色、地址、当前上行、待确认状态。
-- POST /api/v1/network：enabled、uplink、wait、lanIp、eth0Mode、eth1Mode。
+- POST /api/v1/network：新高级模式传 enabled、uplink（单接口或 none）、lanMembers（数组，如 ["eth1","ap"]）、wait、lanIp；旧 eth0Mode/eth1Mode 请求仍兼容。
 - POST /api/v1/network/preset：preset=board/usb/wireless/offline/automatic，以及 enabled、wait、lanIp。
 - POST /api/v1/network/confirm：token；POST /api/v1/network/rollback：立即恢复。
 - POST /api/v1/wifi：mode=apsta 进入实验并发模式。
 
-当前只管理 eth0、eth1、wlan0/ap0；其他 USB 网卡名称、VLAN、多个 LAN 子网、IPv6、多 WAN/负载均衡尚未实现。路由日志在 /data/local/rk3399-control/logs/router.log。
+当前管理检测到的 ethN/usbN/enxMAC 有线接口和 wlan0/ap0；VLAN、任意虚拟网卡、多个 LAN 子网、IPv6、多 WAN/负载均衡尚未实现。路由日志在 /data/local/rk3399-control/logs/router.log。
