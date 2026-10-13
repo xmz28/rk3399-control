@@ -99,7 +99,8 @@ private fun ControlApp() {
                                 repository.updatePort(service.id, port) { result("${service.name} 端口已改为 $port", it) }
                             }
                         )
-                        Page.NETWORK -> NetworkPage(snapshot, busy,
+                        Page.NETWORK -> NetworkPage(s = snapshot, busy = busy,
+                            repository = repository,
                             onMode = { ap -> busy = true; repository.setWifiMode(ap) { result("已切换到 ${if (ap) "AP" else "STA"} 模式", it) } },
                             onApply = { ssid, pass, band, channel -> busy = true; repository.updateAp(ssid, pass, band, channel) { result("热点配置已保存", it) } },
                             onEthernet = { request -> busy = true; repository.setEthernet(request) { result("网口模式已应用", it) } },
@@ -203,6 +204,7 @@ private fun PortDialog(service: ServiceInfo, onDismiss: () -> Unit, onApply: (In
 
 @Composable
 private fun NetworkPage(
+    repository: ControlRepository,
     s: DeviceSnapshot,
     busy: Boolean,
     onMode: (Boolean) -> Unit,
@@ -231,6 +233,7 @@ private fun NetworkPage(
     }
     LaunchedEffect(s.ethMode, s.ethAutoWait) { ethMode = s.ethMode.ifBlank { "auto" }; autoWait = s.ethAutoWait.toString() }
     PageContainer {
+        RouterPanel(repository)
         SectionTitle("Wi‑Fi 模式")
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = { onMode(true) }, enabled = !busy && s.wifiMode != "AP") { Text("切换到 AP 热点") }
@@ -252,6 +255,9 @@ private fun NetworkPage(
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("有线网口模式")
+        if (s.routerEnabled) {
+            Text("统一路由已接管网口：上行 ${s.routerWan.ifBlank { "无" }} · LAN ${s.lanIp}。请使用上方路由面板。")
+        } else {
         Text("当前配置：${ethModeLabel(s.ethMode)}  ·  状态 ${s.ethRole}  ·  ${s.ethIp}", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("默认路由：${s.ethGateway}  ·  PPPoE ${s.pppoeStatus}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -290,6 +296,7 @@ private fun NetworkPage(
             onEthernet(EthernetRequest(ethMode, autoWait.toInt(), staticIp, prefix.toInt(), gateway, dns1, dns2, pppoeUser, pppoePassword))
         }, enabled = !busy && ethernetValid, modifier = Modifier.height(52.dp)) { Text("应用网口配置") }
         WarningCard("切换网口模式会重建 eth0 地址和默认路由，可能立即中断通过网线进行的 ADB、终端或页面连接。")
+        }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
         SectionTitle("USB 启动预设（下次重启生效）")

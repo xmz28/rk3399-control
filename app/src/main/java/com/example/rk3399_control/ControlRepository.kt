@@ -21,6 +21,9 @@ data class ServiceInfo(
 )
 
 data class DeviceSnapshot(
+    val routerEnabled: Boolean = false,
+    val routerWan: String = "",
+    val lanIp: String = "",
     val root: Boolean = false,
     val model: String = "—",
     val android: String = "—",
@@ -85,12 +88,22 @@ class ControlRepository(private val context: Context) {
                 "cp ${RootShell.quote(storage.absolutePath)} /data/local/alpine-nas/opt/nas-storage.py; chmod 0600 /data/local/alpine-nas/opt/nas-storage.py; fi"
             var result = RootShell.run(install)
             if (result.code == 0) {
+                for (name in listOf("router.sh", "router-ap.sh", "router-apsta.sh", "router-lease.sh", "mdns.sh")) {
+                    val asset = File(context.filesDir, name)
+                    context.assets.open(name).use { input -> asset.outputStream().use { input.copyTo(it) } }
+                    val target = if (name == "router-lease.sh") "/data/local/alpine-nas/opt/$name" else "$REMOTE/$name"
+                    result = RootShell.run("cp ${RootShell.quote(asset.absolutePath)} $target && chmod 0700 $target")
+                    if (result.code != 0) break
+                }
+            }
+            if (result.code == 0) {
                 result = RootShell.run(syncCommand() + "; $REMOTE/controller.sh ethernet-bootstrap >$REMOTE/logs/ethernet-apply.log 2>&1; " +
                     "$REMOTE/controller.sh once >/dev/null 2>&1; " +
                     "if [ -s $REMOTE/controller.pid ]; then kill \$(cat $REMOTE/controller.pid) 2>/dev/null || true; fi; " +
                     "nohup $REMOTE/controller.sh daemon >$REMOTE/logs/controller.log 2>&1 & " +
                     "if [ -s $REMOTE/ethernet.pid ]; then kill \$(cat $REMOTE/ethernet.pid) 2>/dev/null || true; fi; " +
-                    "nohup $REMOTE/controller.sh ethernet-daemon >$REMOTE/logs/ethernet.log 2>&1 &")
+                    "nohup $REMOTE/controller.sh ethernet-daemon >$REMOTE/logs/ethernet.log 2>&1 & " +
+                    "$REMOTE/router.sh restart")
             }
             main.post { callback(result) }
         }
@@ -130,13 +143,58 @@ class ControlRepository(private val context: Context) {
         executor.execute {
             val value = if (ap) "1" else "0"
             val result = RootShell.run("printf '$value' > $REMOTE/config/wifi_ap; $REMOTE/controller.sh wifi ${if (ap) "ap" else "sta"}", 30)
-            if (result.code == 0) prefs.edit().putBoolean("wifi_ap", ap).apply()
+            if (result.code == 0) prefs.edit().putBoolean("wifi_ap", ap).putString("wifi_operation", if (ap) "ap" else "sta").apply()
             main.post { callback(result) }
         }
     }
 
+    fun setConcurrentWifi(callback: (ShellResult) -> Unit) {
+        executor.execute {
+            val result = RootShell.run("$REMOTE/controller.sh wifi apsta", 35)
+            if (result.code == 0) prefs.edit().putString("wifi_operation", "apsta").apply()
+            main.post { callback(result) }
+        }
+    }
+
+    fun networkStatus(callback: (ShellResult) -> Unit) = runAsync("$REMOTE/router.sh status", 10, callback)
+
+    fun configureRouterPreset(preset: String, enabled: Boolean, wait: Int, lanIp: String, callback: (ShellResult) -> Unit) {
+        val choice = routerPresets.firstOrNull { it.id == preset }
+        if (choice == null) { callback(ShellResult(2, "未知场景预设")); return }
+        configureRouter(enabled, choice.uplink, wait, lanIp, choice.eth0, choice.eth1, callback, preset)
+    }
+
+    fun configureRouter(enabled: Boolean, uplink: String, wait: Int, lanIp: String,
+                        eth0Mode: String, eth1Mode: String, callback: (ShellResult) -> Unit, preset: String = "custom") {
+        if (uplink !in setOf("auto", "eth0", "eth1", "wlan0", "none") || wait !in 3..120 ||
+            !isIpv4(lanIp) || lanIp.substringAfterLast('.').toIntOrNull() !in 1..99 ||
+            !lanIp.startsWith("192.168.") || eth0Mode !in setOf("auto", "lan") || eth1Mode !in setOf("auto", "lan")) {
+            callback(ShellResult(2, "路由参数无效：LAN 使用 192.168.x.1–99/24，检测时间 3–120 秒")); return
+        }
+        val staged = "$REMOTE/network/staged"
+        val token = java.util.UUID.randomUUID().toString()
+        if ((uplink == "eth0" && eth0Mode == "lan") || (uplink == "eth1" && eth1Mode == "lan")) {
+            callback(ShellResult(2, "指定 WAN 的网口不能同时选择仅 LAN")); return
+        }
+        val wifi = routerPresets.firstOrNull { it.id == preset }?.wifi ?: "keep"
+        val values = mapOf("enabled" to (if (enabled) "1" else "0"), "uplink" to uplink, "wait" to "$wait",
+            "lanIp" to lanIp, "eth0Mode" to eth0Mode, "eth1Mode" to eth1Mode, "preset" to preset, "wifiMode" to wifi)
+        val preflight = if (wifi == "apsta" && enabled) "wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED$' || { echo '请先在 WiFi 页面连接上游，再应用无线上网场景'; exit 2; }; " else ""
+        val command = preflight + "mkdir -p $staged/$token; " + values.map { (key, value) ->
+            "printf %s ${RootShell.quote(value)} > $staged/$token/$key"
+        }.joinToString("; ") + "; $REMOTE/router.sh stage ${RootShell.quote(token)}"
+        runAsync(command, 10, callback)
+    }
+
+    fun confirmRouter(token: String, callback: (ShellResult) -> Unit) {
+        if (!token.matches(Regex("[A-Za-z0-9-]{36}"))) { callback(ShellResult(2, "确认标识无效")); return }
+        runAsync("$REMOTE/router.sh confirm ${RootShell.quote(token)}", 10, callback)
+    }
+
+    fun rollbackRouter(callback: (ShellResult) -> Unit) = runAsync("$REMOTE/router.sh rollback", 10, callback)
+
     fun scanWifi(callback: (ShellResult) -> Unit) = runAsync(
-        "[ \"\$(cat $REMOTE/config/wifi_ap)\" = 0 ] || { echo '请先切换到 STA 模式'; exit 2; }; " +
+        "[ \"\$(cat $REMOTE/config/wifi_ap)\" != 1 ] || { echo '请先切换到 STA 模式'; exit 2; }; " +
             "wpa_cli -i wlan0 scan; sleep 4; wpa_cli -i wlan0 scan_results", 15, callback)
 
     fun connectWifi(ssid: String, password: String, callback: (ShellResult) -> Unit) {
@@ -148,6 +206,11 @@ class ControlRepository(private val context: Context) {
             val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val result = try {
                 if (!manager.isWifiEnabled) manager.isWifiEnabled = true
+                // Wait for the vendor service after AP -> STA, not just wifi_on.
+                for (attempt in 0 until 15) {
+                    if (RootShell.run("wpa_cli -i wlan0 ping", 3).output.contains("PONG")) break
+                    Thread.sleep(1000)
+                }
                 val config = WifiConfiguration().apply {
                     SSID = "\"${ssid.replace("\\", "\\\\").replace("\"", "\\\"")}\""
                     preSharedKey = "\"${password.replace("\\", "\\\\").replace("\"", "\\\"")}\""
@@ -287,7 +350,10 @@ class ControlRepository(private val context: Context) {
             val enabled = prefs.getBoolean("enabled_$id", true)
             "printf '${if (enabled) 1 else 0}' > $REMOTE/enabled/$id"
         }.toMutableList()
-        commands += "printf '${if (prefs.getBoolean("wifi_ap", true)) 1 else 0}' > $REMOTE/config/wifi_ap"
+        val wifiOperation = prefs.getString("wifi_operation", null)
+        val wifiValue = when (wifiOperation) { "apsta" -> 2; "sta" -> 0; "ap" -> 1; else -> if (prefs.getBoolean("wifi_ap", true)) 1 else 0 }
+        // Root config is authoritative after a router transaction/rollback.
+        commands += "[ -f $REMOTE/config/wifi_ap ] || printf '$wifiValue' > $REMOTE/config/wifi_ap"
         listOf("http" to 3923, "ftp" to 12345, "sftp" to 1234, "iperf" to 5201).forEach { (id, default) ->
             commands += "printf '${prefs.getInt("port_$id", default)}' > $REMOTE/config/${id}_port"
         }
@@ -338,6 +404,9 @@ class ControlRepository(private val context: Context) {
             }
         }
         return DeviceSnapshot(
+            routerEnabled = values["ROUTER_ENABLED"] == "1",
+            routerWan = values["ROUTER_WAN"].orEmpty(),
+            lanIp = values["LAN_IP"].orEmpty(),
             root = values["ROOT"] == "0",
             model = values["MODEL"] ?: "—",
             android = values["ANDROID"] ?: "—",

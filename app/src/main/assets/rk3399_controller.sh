@@ -92,6 +92,7 @@ stop_pppoe() {
 }
 
 apply_ethernet() {
+    [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" != 1 ] || { echo '路由管理已接管，请使用路由配置'; return 2; }
     MODE=$(cat "$BASE/config/eth_mode" 2>/dev/null)
     [ -n "$MODE" ] || MODE=auto
     [ "$(getprop init.svc.ethernet_role)" != running ] || stop ethernet_role 2>/dev/null || true
@@ -138,6 +139,7 @@ apply_ethernet() {
 }
 
 bootstrap_ethernet() {
+    [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" != 1 ] || return 0
     BOOT_ID=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
     [ -n "$BOOT_ID" ] || { echo '无法读取启动标识'; return 3; }
     [ "$(cat "$BASE/config/eth_boot_id" 2>/dev/null)" != "$BOOT_ID" ] || return 0
@@ -146,6 +148,7 @@ bootstrap_ethernet() {
 }
 
 manage_ethernet() {
+    [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" != 1 ] || return 0
     MODE=$(cat "$BASE/config/eth_mode" 2>/dev/null); [ -n "$MODE" ] || MODE=auto
     CARRIER=$(cat /sys/class/net/eth0/carrier 2>/dev/null)
     case "$MODE" in
@@ -248,7 +251,9 @@ manage_nas() {
         kill_script /usr/bin/iperf3
     fi
 
-    if enabled mdns; then
+    if [ -x "$BASE/mdns.sh" ]; then
+        "$BASE/mdns.sh" >> "$BASE/logs/mdns.log" 2>&1
+    elif enabled mdns; then
         AVAHI_PID=$(cat "$ROOT/run/avahi-daemon/pid" 2>/dev/null)
         if [ -z "$AVAHI_PID" ] || ! kill -0 "$AVAHI_PID" 2>/dev/null; then
             rm -f "$ROOT/run/avahi-daemon/pid"
@@ -301,18 +306,35 @@ manage_speed() {
 }
 
 wifi_sta() {
+    if [ -s "$BASE/network/run/ap.pid" ]; then kill "$(cat "$BASE/network/run/ap.pid")" 2>/dev/null || true; fi
+    rm -f "$BASE/network/run/ap.pid"
     stop wifi_hotspot 2>/dev/null || true
     kill_script wifi_hotspot.sh
     for PID in $(pidof hostapd 2>/dev/null); do kill "$PID" 2>/dev/null || true; done
+    iw dev ap0 del 2>/dev/null || true
     PID_FILE="$ROOT/run/dnsmasq-wlan0.pid"
     [ ! -s "$PID_FILE" ] || kill "$(cat "$PID_FILE")" 2>/dev/null || true
     rm -f "$PID_FILE" /data/local/tmp/wifi_hotspot.pid
     ip route del 192.168.31.0/24 dev wlan0 table eth0 2>/dev/null || true
     ip addr flush dev wlan0 scope global 2>/dev/null || true
+    # Power-cycle after direct hostapd so STA does not inherit AP firmware state.
+    svc wifi disable 2>/dev/null || true
+    sleep 4
     svc wifi enable 2>/dev/null || true
+    WIFI_READY=0
+    until wpa_cli -i wlan0 ping 2>/dev/null | grep -q PONG || [ "$WIFI_READY" -ge 15 ]; do
+        sleep 1; WIFI_READY=$((WIFI_READY + 1))
+    done
+    # Broadcom APSTA can retain ap=1 even after power cycling. Clear both
+    # firmware flags before supplicant reassociates (tested on AP6256).
+    if [ -x /system/bin/wl ] && [ "$(wl ap 2>/dev/null)" = 1 ]; then
+        wl down; wl apsta 0; wl ap 0; wl up
+        wpa_cli -i wlan0 reassociate >/dev/null 2>&1 || true
+    fi
 }
 
 wifi_ap() {
+    [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" != 1 ] || return 0
     if [ -f /system/etc/init/wifi-hotspot.rc ]; then
         start wifi_hotspot 2>/dev/null || true
     elif ! pidof hostapd >/dev/null 2>&1; then
@@ -331,11 +353,18 @@ wifi_ap() {
 }
 
 wifi_dhcp_running() {
+    if [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" = 1 ]; then
+        PID_FILE="$ROOT/run/dnsmasq-router.pid"
+        [ -s "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+        return $?
+    fi
     PID_FILE="$ROOT/run/dnsmasq-wlan0.pid"
     [ -s "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
 manage_wifi() {
+    [ ! -f "$BASE/config/wifi_transition" ] || return 0
+    [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" != 1 ] || return 0
     if [ "$(cat "$BASE/config/wifi_ap" 2>/dev/null)" = "0" ]; then
         # STA must not be torn down every supervisor tick: that used to flush
         # DHCP addresses every 15 seconds and made joining a network impossible.
@@ -368,20 +397,26 @@ run_once() {
 }
 
 print_status() {
+    echo "ROUTER_ENABLED=$(cat "$BASE/network/config/enabled" 2>/dev/null)"
+    echo "ROUTER_WAN=$(cat "$BASE/network/run/wan" 2>/dev/null)"
+    echo "LAN_IP=$(cat "$BASE/network/config/lanIp" 2>/dev/null)"
     FTP_PORT=$(config_port ftp 12345); SFTP_PORT=$(config_port sftp 1234)
     HTTP_PORT=$(config_port http 3923); IPERF_PORT=$(config_port iperf 5201)
     echo "ROOT=$(id -u)"
     echo "MODEL=$(getprop ro.product.model)"
     echo "ANDROID=$(getprop ro.build.version.release) / API $(getprop ro.build.version.sdk) / $(getprop ro.product.cpu.abi)"
     echo "BOOT_MODE=$(cat "$NAS/boot-mode" 2>/dev/null)"
-    echo "ETH_ROLE=$(cat /data/local/tmp/ethernet_role 2>/dev/null)"
+    if [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" = 1 ]; then
+        echo "ETH_ROLE=$(cat "$BASE/network/run/eth0.role" 2>/dev/null)"
+    else echo "ETH_ROLE=$(cat /data/local/tmp/ethernet_role 2>/dev/null)"; fi
     echo "ETH_MODE=$(cat "$BASE/config/eth_mode" 2>/dev/null)"
     echo "ETH_AUTO_WAIT=$(cat "$BASE/config/eth_auto_wait" 2>/dev/null)"
     echo "ETH_GATEWAY=$(ip -4 route show default 2>/dev/null | head -n 1)"
     echo "PPPOE_STATUS=$(getprop net.pppoe.status)"
     echo "ETH_IP=$(ip -4 addr show dev eth0 2>/dev/null | grep ' inet ' | head -n 1 | sed 's/^[[:space:]]*//')"
     echo "WLAN_IP=$(ip -4 addr show dev wlan0 2>/dev/null | grep ' inet ' | head -n 1 | sed 's/^[[:space:]]*//')"
-    if pidof hostapd >/dev/null 2>&1; then WIFI_NOW=AP; else WIFI_NOW=STA; fi
+    if [ "$(cat "$BASE/config/wifi_ap")" = 2 ]; then WIFI_NOW=AP+STA
+    elif pidof hostapd >/dev/null 2>&1; then WIFI_NOW=AP; else WIFI_NOW=STA; fi
     echo "WIFI_MODE=$WIFI_NOW"
     if wifi_dhcp_running; then echo 'WIFI_DHCP_RUNNING=1'; else echo 'WIFI_DHCP_RUNNING=0'; fi
     SSID_NOW=$(iw dev wlan0 info 2>/dev/null | sed -n 's/^[[:space:]]*ssid //p' | head -n 1)
@@ -391,11 +426,12 @@ print_status() {
         SSID_NOW=$(wpa_cli -i wlan0 status 2>/dev/null | sed -n 's/^ssid=//p' | head -n 1)
     fi
     CHANNEL_NOW=$(iw dev wlan0 info 2>/dev/null | grep 'channel ' | head -n 1 | sed 's/.*channel \([0-9][0-9]*\).*/\1/')
+    [ -n "$CHANNEL_NOW" ] || CHANNEL_NOW=$(wl status 2>/dev/null | sed -n 's/.*Primary channel: //p' | head -n 1)
     if [ "$WIFI_NOW" = AP ]; then
         [ -n "$CHANNEL_NOW" ] || CHANNEL_NOW=$(sed -n 's/^channel=//p' "$HOTSPOT/hostapd.conf" 2>/dev/null | head -n 1)
     fi
     BAND_NOW=2g
-    case "$CHANNEL_NOW" in 36|40|44|48|52|56|60|64|149|153|157|161|165) BAND_NOW=5g;; esac
+    case "$CHANNEL_NOW" in ''|*[!0-9]*) BAND_NOW=unknown;; *) [ "$CHANNEL_NOW" -le 14 ] || BAND_NOW=5g;; esac
     echo "SSID=$SSID_NOW"
     echo "BAND=$BAND_NOW"
     echo "CHANNEL=$CHANNEL_NOW"
@@ -576,6 +612,8 @@ apply_port() {
 }
 
 ap_config() {
+    printf '%s' "$$" > "$BASE/config/wifi_transition"
+    trap 'rm -f "$BASE/config/wifi_transition"' EXIT
     SSID="$1"; PASS="$2"; BAND="$3"; CH="$4"; CONF="$HOTSPOT/hostapd.conf"
     [ -f "$CONF" ] || { echo "找不到 $CONF"; return 3; }
     [ ${#PASS} -ge 8 ] && [ ${#PASS} -le 63 ] || { echo '热点密码长度必须是 8..63'; return 3; }
@@ -596,6 +634,7 @@ ap_config() {
     wifi_sta
     sleep 5
     printf '1' > "$BASE/config/wifi_ap"
+    rm -f "$BASE/config/wifi_transition"
     wifi_ap
     AP_TRIES=0
     while [ "$AP_TRIES" -lt 24 ]; do
@@ -637,6 +676,8 @@ case "$1" in
         ;;
     status) print_status ;;
     wifi)
+        printf '%s' "$$" > "$BASE/config/wifi_transition"
+        trap 'rm -f "$BASE/config/wifi_transition"' EXIT
         case "$2" in
             sta)
                 printf '0' > "$BASE/config/wifi_ap"; wifi_sta
@@ -647,7 +688,9 @@ case "$1" in
                 pidof hostapd >/dev/null 2>&1 && { echo 'STA 切换未完成'; exit 3; }
                 echo '已切换 STA，可扫描附近 Wi-Fi' ;;
             ap)
+                printf '0' > "$BASE/config/wifi_ap"; wifi_sta
                 printf '1' > "$BASE/config/wifi_ap"; wifi_ap
+                rm -f "$BASE/config/wifi_transition"
                 WIFI_TRIES=0
                 until { pidof hostapd >/dev/null 2>&1 && wifi_dhcp_running; } || [ "$WIFI_TRIES" -ge 25 ]; do
                     sleep 1; WIFI_TRIES=$((WIFI_TRIES + 1))
@@ -656,6 +699,17 @@ case "$1" in
                     echo 'AP 或 DHCP 未启动，请查看 Wi-Fi 日志'; exit 3;
                 }
                 echo '热点和 DHCP 已启动' ;;
+            apsta)
+                [ "$(cat "$BASE/network/config/enabled" 2>/dev/null)" = 1 ] || { echo '请先启用路由管理'; exit 2; }
+                wpa_cli -i wlan0 status | grep -q '^wpa_state=COMPLETED' || { echo '请先使用 STA 连接上游 WiFi'; exit 2; }
+                printf '2' > "$BASE/config/wifi_ap"
+                rm -f "$BASE/config/wifi_transition"
+                WIFI_TRIES=0
+                until hostapd_cli -p /data/misc/wifi/hostapd-ap0 -i ap0 status 2>/dev/null | grep -q '^state=ENABLED' || [ "$WIFI_TRIES" -ge 25 ]; do
+                    sleep 1; WIFI_TRIES=$((WIFI_TRIES + 1))
+                done
+                hostapd_cli -p /data/misc/wifi/hostapd-ap0 -i ap0 status 2>/dev/null | grep -q '^state=ENABLED' || { echo '并发 AP 未启动，请切回 STA 查看日志'; exit 3; }
+                echo '已启用实验性 STA + AP；AP 实际频段和信道跟随上游 STA' ;;
             *) echo '模式必须为 ap 或 sta'; exit 2 ;;
         esac ;;
     ap-config) ap_config "$2" "$3" "$4" "$5" ;;

@@ -5,6 +5,8 @@
 
 ## 功能
 
+2026-10-13 新增统一单 WAN 路由与五个场景预设，修复热点/USB WAN 下 mDNS 发现。统一管理启用后，旧单网口静态 IP/PPPoE 设置不再接管网口。配置方式、上下游访问、AP+STA 限制和实测范围见 [路由管理说明](ROUTER_CN.md)。用户反馈当前测试暂未发现问题，长期及边界场景仍需继续验证。
+
 - 查看 RK3399 型号、Android/API、root、启动方式、eth0/wlan0 地址和 AP 状态。
 - 查看并控制 Samba、HTTP 文件管理、Primitive FTPd、OpenSpeedTest、iperf3 和 mDNS。
 - 为各服务保存开机启用状态；App 收到 `BOOT_COMPLETED` 后恢复这些状态。

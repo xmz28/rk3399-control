@@ -109,11 +109,21 @@ class RemoteControlService : Service() {
     }
 
     private fun route(method: String, path: String, body: JSONObject, fullPath: String): JSONObject {
+        if (method == "GET" && path == "/api/v1/network") {
+            val shell = await { repository.networkStatus(it) }
+            return result(shell).apply {
+                shell.output.lineSequence().forEach { line ->
+                    val i = line.indexOf('=')
+                    if (i > 0) put(line.substring(0, i), line.substring(i + 1))
+                }
+            }
+        }
         if (path == "/api/v1/storage") return UsbStorageBackend.request(if (method == "POST") body else null)
         if (method == "GET" && path == "/api/v1/status") {
             val snapshot = awaitSnapshot()
             if (snapshot.error != null) return error(snapshot.error)
             return JSONObject().put("ok", true).put("model", snapshot.model).put("android", snapshot.android)
+                .put("routerEnabled", snapshot.routerEnabled).put("routerWan", snapshot.routerWan).put("lanIp", snapshot.lanIp)
                 .put("ethRole", snapshot.ethRole).put("ethIp", snapshot.ethIp).put("ethMode", snapshot.ethMode)
                 .put("ethAutoWait", snapshot.ethAutoWait).put("ethGateway", snapshot.ethGateway)
                 .put("pppoeStatus", snapshot.pppoeStatus).put("wlanIp", snapshot.wlanIp)
@@ -150,6 +160,17 @@ class RemoteControlService : Service() {
         }
         if (method != "POST") throw IllegalArgumentException("Unknown endpoint")
         return when (path) {
+            "/api/v1/network" -> result(await {
+                repository.configureRouter(body.getBoolean("enabled"), body.getString("uplink"),
+                    body.optInt("wait", 20), body.optString("lanIp", "192.168.31.1"),
+                    body.optString("eth0Mode", "auto"), body.optString("eth1Mode", "auto"), it)
+            })
+            "/api/v1/network/preset" -> result(await {
+                repository.configureRouterPreset(body.getString("preset"), body.optBoolean("enabled", true),
+                    body.optInt("wait", 20), body.optString("lanIp", "192.168.31.1"), it)
+            })
+            "/api/v1/network/confirm" -> result(await { repository.confirmRouter(body.getString("token"), it) })
+            "/api/v1/network/rollback" -> result(await { repository.rollbackRouter(it) })
             "/api/v1/service" -> {
                 val id = body.getString("id")
                 require(id in setOf("samba", "http", "ftp", "speed", "iperf", "mdns")) { "Invalid service" }
@@ -162,8 +183,8 @@ class RemoteControlService : Service() {
             }
             "/api/v1/wifi" -> {
                 val mode = body.getString("mode")
-                require(mode in setOf("ap", "sta")) { "Invalid Wi-Fi mode" }
-                result(await { repository.setWifiMode(mode == "ap", it) })
+                require(mode in setOf("ap", "sta", "apsta")) { "Invalid Wi-Fi mode" }
+                result(await { if (mode == "apsta") repository.setConcurrentWifi(it) else repository.setWifiMode(mode == "ap", it) })
             }
             "/api/v1/wifi/connect" -> result(await {
                 repository.connectWifi(body.getString("ssid"), body.getString("password"), it)
