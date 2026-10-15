@@ -186,8 +186,9 @@ firewall() {
         # No general WAN->LAN forwarding and no public Internet administration.
         case "$WAN_IP" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
             iptables -A RK_INPUT -i "$WAN" -s "$WAN_IP/$WAN_PREFIX" -p udp --dport 5353 -j ACCEPT
+            iptables -A RK_INPUT -i "$WAN" -s "$WAN_IP/$WAN_PREFIX" -p udp --dport 3702 -j ACCEPT
             iptables -A RK_INPUT -i "$WAN" -s "$WAN_IP/$WAN_PREFIX" -p icmp -j ACCEPT
-            for PORT in 80 8765 445 139 3000 $(cat "$BASE/config/http_port") $(cat "$BASE/config/ftp_port") $(cat "$BASE/config/sftp_port") $(cat "$BASE/config/iperf_port"); do
+            for PORT in 22 80 8765 445 139 3000 5357 $(cat "$BASE/config/http_port") $(cat "$BASE/config/ftp_port") $(cat "$BASE/config/sftp_port") $(cat "$BASE/config/iperf_port"); do
                 case "$PORT" in ''|*[!0-9]*) continue;; esac
                 iptables -A RK_INPUT -i "$WAN" -s "$WAN_IP/$WAN_PREFIX" -p tcp --dport "$PORT" -j ACCEPT
             done

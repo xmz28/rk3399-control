@@ -109,6 +109,12 @@ class RemoteControlService : Service() {
     }
 
     private fun route(method: String, path: String, body: JSONObject, fullPath: String): JSONObject {
+        if (method == "GET" && path == "/api/v1/wifi/ap-password") {
+            val result = await { repository.readApPassword(it) }
+            val password = result.output.trimEnd('\r', '\n')
+            if (result.code != 0 || password.length !in 8..63) return error("热点密码读取失败")
+            return JSONObject().put("ok", true).put("password", password)
+        }
         if (method == "GET" && path == "/api/v1/network") {
             val shell = await { repository.networkStatus(it) }
             return result(shell).apply {
@@ -274,7 +280,7 @@ class RemoteControlService : Service() {
         val payload = json.toString().toByteArray(StandardCharsets.UTF_8)
         val reason = when (code) { 200 -> "OK"; 400 -> "Bad Request"; 401 -> "Unauthorized"; 403 -> "Forbidden"; else -> "Internal Server Error" }
         val header = "HTTP/1.1 $code $reason\r\nContent-Type: application/json; charset=utf-8\r\n" +
-            "Content-Length: ${payload.size}\r\nConnection: close\r\n" +
+            "Content-Length: ${payload.size}\r\nConnection: close\r\nCache-Control: no-store\r\n" +
             (if (challenge) "WWW-Authenticate: Basic realm=\"RK3399 Control\"\r\n" else "") + "\r\n"
         socket.getOutputStream().write(header.toByteArray(StandardCharsets.US_ASCII) + payload)
     }

@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.rk3399_control.ui.theme.Rk3399_controlTheme
@@ -213,7 +214,9 @@ private fun NetworkPage(
     onUsbPreset: (String) -> Unit
 ) {
     var ssid by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordEdited by remember { mutableStateOf(false) }
+    var showPassword by remember { mutableStateOf(true) }
     var band by rememberSaveable { mutableStateOf("2g") }
     var channel by rememberSaveable { mutableIntStateOf(1) }
     var ethMode by rememberSaveable { mutableStateOf("auto") }
@@ -226,6 +229,12 @@ private fun NetworkPage(
     var pppoeUser by rememberSaveable { mutableStateOf("") }
     var pppoePassword by rememberSaveable { mutableStateOf("") }
     var pendingUsbPreset by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        repository.readApPassword { result ->
+            val current = result.output.trimEnd('\r', '\n')
+            if (!passwordEdited && result.code == 0 && current.length in 8..63) password = current
+        }
+    }
     LaunchedEffect(s.apSsid) { if (ssid.isBlank() && s.apSsid != "—") ssid = s.apSsid }
     LaunchedEffect(s.apBand, s.apChannel) {
         band = s.apBand.ifBlank { "2g" }
@@ -243,7 +252,9 @@ private fun NetworkPage(
         if (s.wifiMode == "AP") Text("热点 DHCP：${if (s.wifiDhcpRunning) "运行中" else "未运行，手机可能无法获取 IP"}", color = if (s.wifiDhcpRunning) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
         HorizontalDivider(Modifier.padding(vertical = 4.dp)); SectionTitle("热点配置")
         OutlinedTextField(ssid, { ssid = it.take(32) }, Modifier.fillMaxWidth(), label = { Text("SSID") }, singleLine = true)
-        OutlinedTextField(password, { password = it.take(63) }, Modifier.fillMaxWidth(), label = { Text("新密码（8–63 位）") }, singleLine = true, visualTransformation = PasswordVisualTransformation())
+        OutlinedTextField(password, { password = it.take(63); passwordEdited = true }, Modifier.fillMaxWidth(), label = { Text("热点密码（8–63 位）") }, singleLine = true,
+            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = { TextButton(onClick = { showPassword = !showPassword }) { Text(if (showPassword) "隐藏" else "显示") } })
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("频段")
             EthModeButton("2g", "2.4 GHz", band) { band = it; if (channel !in 1..13) channel = 1 }

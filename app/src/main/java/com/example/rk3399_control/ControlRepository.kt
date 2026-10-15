@@ -282,6 +282,15 @@ class ControlRepository(private val context: Context) {
         }
     }
 
+    // Read the authoritative hotspot file, not potentially stale App preferences.
+    fun readApPassword(callback: (ShellResult) -> Unit) = runAsync(
+        "[ -r /data/local/rk3399-hotspot/hostapd.conf ] || exit 2; " +
+            "sed -n 's/^wpa_passphrase=/AP_PASSWORD=/p' /data/local/rk3399-hotspot/hostapd.conf | head -n 1; printf '\\nEND\\n'", 5) { result ->
+        // RootShell trims outer whitespace; the marker preserves password spaces.
+        callback(result.copy(output = if (result.code == 0) result.output.lineSequence()
+            .firstOrNull { it.startsWith("AP_PASSWORD=") }?.removePrefix("AP_PASSWORD=").orEmpty() else ""))
+    }
+
     fun updateAp(ssid: String, password: String, band: String, channel: Int, callback: (ShellResult) -> Unit) {
         if (ssid.isBlank() || ssid.toByteArray().size > 32 || '\n' in ssid || '\r' in ssid) {
             callback(ShellResult(2, "SSID 不能为空且最多 32 字节"))
