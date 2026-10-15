@@ -4,6 +4,10 @@
 
 当前目标设备为 **AIO-3399C-AI，Android 7.1.2，已 root**。项目围绕这台板子和现有服务环境开发，不提供其他板子的兼容性保证。
 
+## 下载 APK
+
+[下载 1.0 Debug 预览版](https://github.com/xmz28/rk3399-control/releases/tag/v1.0-debug-20261015)：在 Release 的 Assets 中选择 `.apk`，安装到已 root 的 RK3399 板子（Android 7.0 及以上）。发布页附中文安装说明和 SHA-256；这是调试签名的 Pre-release，同签名可覆盖安装，不同签名不能直接覆盖。
+
 ## 功能
 
 - 查看系统、root、网卡地址、服务状态和日志
@@ -45,7 +49,7 @@ PowerShell 构建：
 .\gradlew.bat :app:assembleDebug --no-daemon
 ```
 
-仅在依赖已缓存时使用 `--offline`。Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。本仓库不包含签名密钥、设备镜像、构建缓存或发布 APK。
+仅在依赖已缓存时使用 `--offline`。Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。源码仓库不包含签名密钥、设备镜像、构建缓存或 APK，预览安装包通过 Release 下载。
 
 ## USB 启动预设
 
